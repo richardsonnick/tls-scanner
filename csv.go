@@ -11,7 +11,8 @@ import (
 
 var csvColumns = []string{
 	"IP", "Port", "Protocol", "Service", "Pod Name", "Namespace", "Component Name", "Component Maintainer",
-	"Process", "TLS Ciphers", "TLS Version", "Status", "Reason", "Listen Address",
+	"Process", "TLS Ciphers", "TLS Version", "TLS Supported Groups", "Status", "Reason", "Listen Address",
+	"TLS 1.3 Supported", "ML-KEM Supported", "ML-KEM KEMs", "All KEMs",
 	"Ingress Configured Profile", "Ingress Configured MinVersion", "Ingress MinVersion Compliance", "Ingress Configured Ciphers", "Ingress Cipher Compliance",
 	"API Configured Profile", "API Configured MinVersion", "API MinVersion Compliance", "API Configured Ciphers", "API Cipher Compliance",
 	"Kubelet Configured MinVersion", "Kubelet MinVersion Compliance", "Kubelet Configured Ciphers", "Kubelet Cipher Compliance",
@@ -110,6 +111,20 @@ func writeCSVOutput(results ScanResults, filename string) error {
 				statusStr = string(portResult.Status)
 			}
 
+			// Extract supported groups (combines key exchange groups and KEMs)
+			supportedGroups := "N/A"
+			if portResult.TlsKeyExchange != nil {
+				allGroups := append([]string{}, portResult.TlsKeyExchange.Groups...)
+				if portResult.TlsKeyExchange.ForwardSecrecy != nil {
+					for _, kem := range portResult.TlsKeyExchange.ForwardSecrecy.KEMs {
+						if !stringInSlice(kem, allGroups) {
+							allGroups = append(allGroups, kem)
+						}
+					}
+				}
+				supportedGroups = joinOrNA(allGroups)
+			}
+
 			rowData := map[string]string{
 				"IP":                            ipAddress,
 				"Port":                          port,
@@ -122,9 +137,14 @@ func writeCSVOutput(results ScanResults, filename string) error {
 				"Process":                       stringOrNA(portResult.ProcessName),
 				"TLS Ciphers":                   joinOrNA(portResult.TlsCiphers),
 				"TLS Version":                   joinOrNA(portResult.TlsVersions),
+				"TLS Supported Groups":          supportedGroups,
 				"Status":                        statusStr,
 				"Reason":                        stringOrNA(portResult.Reason),
 				"Listen Address":                stringOrNA(portResult.ListenAddress),
+				"TLS 1.3 Supported":             boolToYesNo(portResult.TLS13Supported),
+				"ML-KEM Supported":              boolToYesNo(portResult.MLKEMSupported),
+				"ML-KEM KEMs":                   joinOrNA(portResult.MLKEMCiphers),
+				"All KEMs":                      joinOrNA(portResult.AllKEMs),
 				"Ingress Configured Profile":    ingressProfile,
 				"Ingress Configured MinVersion": ingressMinVersion,
 				"Ingress MinVersion Compliance": "N/A",
@@ -250,4 +270,11 @@ func removeDuplicates(slice []string) []string {
 		}
 	}
 	return result
+}
+
+func boolToYesNo(b bool) string {
+	if b {
+		return "Yes"
+	}
+	return "No"
 }
