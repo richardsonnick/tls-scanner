@@ -26,12 +26,8 @@ func main() {
 		if finalScanResults != nil {
 			if isPQCCheck {
 				if hasPQCComplianceFailures(*finalScanResults) {
-					fmt.Println("\nPQC COMPLIANCE CHECK: FAILED")
-					fmt.Println("One or more endpoints do not support TLS 1.3 + ML-KEM (x25519mlkem768 or mlkem768)")
 					os.Exit(1)
 				}
-				fmt.Println("\nPQC COMPLIANCE CHECK: PASSED")
-				fmt.Println("All endpoints support TLS 1.3 + ML-KEM")
 			} else {
 				if hasComplianceFailures(*finalScanResults) {
 					os.Exit(1)
