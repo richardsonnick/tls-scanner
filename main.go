@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -208,7 +207,7 @@ func main() {
 	}
 
 	// Read the JSON output file
-	output, readErr := ioutil.ReadFile(tmpFileName)
+	output, readErr := os.ReadFile(tmpFileName)
 	if readErr != nil {
 		log.Printf("Error reading testssl.sh output file: %v", readErr)
 		output = []byte{}
@@ -1122,7 +1121,7 @@ func parseTestSSLOutput(jsonData []byte, host, port string) ScanRun {
 
 // parseTestSSLOutputFromFile reads and parses testssl.sh JSON output from a file
 func parseTestSSLOutputFromFile(filename, host, port string) ScanRun {
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		log.Printf("Error reading testssl.sh output file %s: %v", filename, err)
 		return ScanRun{Hosts: []Host{{
@@ -1436,7 +1435,7 @@ func isKEMGroup(name string) bool {
 
 // readTestSSLJSONFile reads raw JSON data from a testssl.sh output file
 func readTestSSLJSONFile(filename string) ([]byte, error) {
-	return ioutil.ReadFile(filename)
+	return os.ReadFile(filename)
 }
 
 func hasPQCComplianceFailures(results ScanResults) bool {
@@ -1708,7 +1707,7 @@ func checkPQCWithTestSSL(target string) (tls13 bool, tlsVersions []string, mlkem
 		log.Printf("testssl.sh -p -f returned non-zero exit code for %s: %v (output: %s)", target, err, string(output))
 	}
 
-	jsonData, err := ioutil.ReadFile(tmpFileName)
+	jsonData, err := os.ReadFile(tmpFileName)
 	if err != nil || len(jsonData) == 0 {
 		log.Printf("testssl.sh -p -f produced no JSON output for %s: %v", target, err)
 		return
