@@ -694,3 +694,52 @@ func (k *K8sClient) getKubeletConfigWithTLSProfile() (*unstructured.Unstructured
 	log.Println("No KubeletConfig with a TLSSecurityProfile found in the cluster")
 	return nil, nil // Not an error, just means none was found
 }
+
+func (k *K8sClient) filterPodsByComponent(pods []PodInfo, componentFilter string) []PodInfo {
+	if componentFilter == "" {
+		return pods
+	}
+
+	log.Printf("Filtering pods by component name(s): %s", componentFilter)
+	filterComponents := strings.Split(componentFilter, ",")
+	filterSet := make(map[string]struct{})
+	for _, c := range filterComponents {
+		filterSet[strings.TrimSpace(c)] = struct{}{}
+	}
+
+	var filtered []PodInfo
+	for _, pod := range pods {
+		component, err := k.getOpenshiftComponentFromImage(pod.Image)
+		if err != nil {
+			log.Printf("Warning: could not get component for image %s: %v", pod.Image, err)
+			continue
+		}
+		if _, ok := filterSet[component.Component]; ok {
+			filtered = append(filtered, pod)
+		}
+	}
+	log.Printf("Filtered pods: %d remaining out of %d", len(filtered), len(pods))
+	return filtered
+}
+
+func filterPodsByNamespace(pods []PodInfo, namespaceFilter string) []PodInfo {
+	if namespaceFilter == "" {
+		return pods
+	}
+
+	log.Printf("Filtering pods by namespace(s): %s", namespaceFilter)
+	filterNamespaces := strings.Split(namespaceFilter, ",")
+	filterSet := make(map[string]struct{})
+	for _, ns := range filterNamespaces {
+		filterSet[strings.TrimSpace(ns)] = struct{}{}
+	}
+
+	var filtered []PodInfo
+	for _, pod := range pods {
+		if _, ok := filterSet[pod.Namespace]; ok {
+			filtered = append(filtered, pod)
+		}
+	}
+	log.Printf("Filtered pods by namespace: %d remaining out of %d", len(filtered), len(pods))
+	return filtered
+}

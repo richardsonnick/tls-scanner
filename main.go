@@ -71,7 +71,7 @@ func main() {
 
 	var k8sClient *K8sClient
 	var err error
-	var allPodsInfo []PodInfo
+	var pods []PodInfo
 
 	if *pqcCheck {
 		isPQCCheck = true
@@ -84,15 +84,15 @@ func main() {
 				log.Fatalf("Error creating Kubernetes client: %v", err)
 			}
 
-			allPodsInfo = k8sClient.getAllPodsInfo()
-			allPodsInfo = filterPodsByComponent(allPodsInfo, *componentFilter, k8sClient)
-			allPodsInfo = filterPodsByNamespace(allPodsInfo, *namespaceFilter)
+			pods = k8sClient.getAllPodsInfo()
+			pods = k8sClient.filterPodsByComponent(pods, *componentFilter)
+			pods = filterPodsByNamespace(pods, *namespaceFilter)
 
-			if *limitIPs > 0 && len(allPodsInfo) > *limitIPs {
-				allPodsInfo = allPodsInfo[:*limitIPs]
+			if *limitIPs > 0 && len(pods) > *limitIPs {
+				pods = pods[:*limitIPs]
 			}
 
-			scanResults = performPQCClusterScan(allPodsInfo, k8sClient, *concurrentScans)
+			scanResults = performPQCClusterScan(pods, k8sClient, *concurrentScans)
 		} else if *targets != "" {
 			targetList := strings.Split(*targets, ",")
 			scanResults = performPQCScan(targetList, *concurrentScans)
@@ -147,33 +147,33 @@ func main() {
 			log.Fatalf("Could not create kubernetes client for --all-pods: %v", err)
 		}
 
-		allPodsInfo = k8sClient.getAllPodsInfo()
-		allPodsInfo = filterPodsByComponent(allPodsInfo, *componentFilter, k8sClient)
-		allPodsInfo = filterPodsByNamespace(allPodsInfo, *namespaceFilter)
+		pods = k8sClient.getAllPodsInfo()
+		pods = k8sClient.filterPodsByComponent(pods, *componentFilter)
+		pods = filterPodsByNamespace(pods, *namespaceFilter)
 
-		log.Printf("Found %d pods to scan from the cluster.", len(allPodsInfo))
+		log.Printf("Found %d pods to scan from the cluster.", len(pods))
 
 		// Apply IP limit if specified
 		if *limitIPs > 0 {
 			totalIPs := 0
-			for _, pod := range allPodsInfo {
+			for _, pod := range pods {
 				totalIPs += len(pod.IPs)
 			}
 
 			if totalIPs > *limitIPs {
 				log.Printf("Limiting scan to %d IPs (found %d total IPs)", *limitIPs, totalIPs)
-				allPodsInfo = limitPodsToIPCount(allPodsInfo, *limitIPs)
+				pods = limitPodsToIPCount(pods, *limitIPs)
 				limitedTotal := 0
-				for _, pod := range allPodsInfo {
+				for _, pod := range pods {
 					limitedTotal += len(pod.IPs)
 				}
-				log.Printf("After limiting: %d pods with %d total IPs", len(allPodsInfo), limitedTotal)
+				log.Printf("After limiting: %d pods with %d total IPs", len(pods), limitedTotal)
 			}
 		}
 	}
 
-	if len(allPodsInfo) > 0 {
-		scanResults := performClusterScan(allPodsInfo, *concurrentScans, k8sClient)
+	if len(pods) > 0 {
+		scanResults := performClusterScan(pods, *concurrentScans, k8sClient)
 		finalScanResults = &scanResults
 
 		writeOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile)
@@ -330,49 +330,6 @@ func writeJUnitOutput(scanResults ScanResults, filename string) error {
 	}
 
 	return nil
-}
-
-func filterPodsByComponent(pods []PodInfo, componentFilter string, k8sClient *K8sClient) []PodInfo {
-	if componentFilter == "" {
-		return pods
-	}
-	log.Printf("Filtering pods by component name(s): %s", componentFilter)
-	filterSet := make(map[string]struct{})
-	for _, c := range strings.Split(componentFilter, ",") {
-		filterSet[strings.TrimSpace(c)] = struct{}{}
-	}
-	var filtered []PodInfo
-	for _, pod := range pods {
-		component, err := k8sClient.getOpenshiftComponentFromImage(pod.Image)
-		if err != nil {
-			log.Printf("Warning: could not get component for image %s: %v", pod.Image, err)
-			continue
-		}
-		if _, ok := filterSet[component.Component]; ok {
-			filtered = append(filtered, pod)
-		}
-	}
-	log.Printf("Filtered pods: %d remaining out of %d", len(filtered), len(pods))
-	return filtered
-}
-
-func filterPodsByNamespace(pods []PodInfo, namespaceFilter string) []PodInfo {
-	if namespaceFilter == "" {
-		return pods
-	}
-	log.Printf("Filtering pods by namespace(s): %s", namespaceFilter)
-	filterSet := make(map[string]struct{})
-	for _, ns := range strings.Split(namespaceFilter, ",") {
-		filterSet[strings.TrimSpace(ns)] = struct{}{}
-	}
-	var filtered []PodInfo
-	for _, pod := range pods {
-		if _, ok := filterSet[pod.Namespace]; ok {
-			filtered = append(filtered, pod)
-		}
-	}
-	log.Printf("Filtered pods by namespace: %d remaining out of %d", len(filtered), len(pods))
-	return filtered
 }
 
 func isTestSSLInstalled() bool {
@@ -574,18 +531,18 @@ func extractTLSInfo(scanRun ScanRun) (versions []string, ciphers []string, ciphe
 	return tlsVersions, allDetectedCiphers, cipherStrength
 }
 
-func performClusterScan(allPodsInfo []PodInfo, concurrentScans int, k8sClient *K8sClient) ScanResults {
+func performClusterScan(pods []PodInfo, concurrentScans int, k8sClient *K8sClient) ScanResults {
 	startTime := time.Now()
 
 	totalIPs := 0
-	for _, pod := range allPodsInfo {
+	for _, pod := range pods {
 		totalIPs += len(pod.IPs)
 	}
 
 	fmt.Printf("========================================\n")
 	fmt.Printf("CONCURRENT CLUSTER SCAN STARTING\n")
 	fmt.Printf("========================================\n")
-	fmt.Printf("Total Pods to scan: %d\n", len(allPodsInfo))
+	fmt.Printf("Total Pods to scan: %d\n", len(pods))
 	fmt.Printf("Total IPs to scan: %d\n", totalIPs)
 	fmt.Printf("Concurrent workers: %d\n", concurrentScans)
 	fmt.Printf("Process detection workers: %d\n", max(2, concurrentScans/2))
@@ -609,7 +566,7 @@ func performClusterScan(allPodsInfo []PodInfo, concurrentScans int, k8sClient *K
 	}
 
 	// Create a channel to send PodInfo to workers
-	podChan := make(chan PodInfo, len(allPodsInfo))
+	podChan := make(chan PodInfo, len(pods))
 
 	// Use a WaitGroup to wait for all workers to complete
 	var wg sync.WaitGroup
@@ -646,7 +603,7 @@ func performClusterScan(allPodsInfo []PodInfo, concurrentScans int, k8sClient *K
 	}
 
 	// Send PodInfo to workers
-	for _, pod := range allPodsInfo {
+	for _, pod := range pods {
 		podChan <- pod
 	}
 	close(podChan)
@@ -891,15 +848,15 @@ func categorizePortResult(portResult PortResult, tlsPort Port) (ScanStatus, stri
 }
 
 // limitPodsToIPCount limits the pod list to contain at most maxIPs total IP addresses
-func limitPodsToIPCount(allPodsInfo []PodInfo, maxIPs int) []PodInfo {
+func limitPodsToIPCount(pods []PodInfo, maxIPs int) []PodInfo {
 	if maxIPs <= 0 {
-		return allPodsInfo
+		return pods
 	}
 
 	var limitedPods []PodInfo
 	currentIPCount := 0
 
-	for _, pod := range allPodsInfo {
+	for _, pod := range pods {
 		if currentIPCount >= maxIPs {
 			break
 		}
