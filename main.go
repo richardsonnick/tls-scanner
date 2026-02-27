@@ -86,39 +86,8 @@ func main() {
 			}
 
 			allPodsInfo = k8sClient.getAllPodsInfo()
-
-			if *componentFilter != "" {
-				filterComponents := strings.Split(*componentFilter, ",")
-				filterSet := make(map[string]struct{})
-				for _, c := range filterComponents {
-					filterSet[strings.TrimSpace(c)] = struct{}{}
-				}
-				var filteredPods []PodInfo
-				for _, pod := range allPodsInfo {
-					component, _ := k8sClient.getOpenshiftComponentFromImage(pod.Image)
-					if component != nil {
-						if _, ok := filterSet[component.Component]; ok {
-							filteredPods = append(filteredPods, pod)
-						}
-					}
-				}
-				allPodsInfo = filteredPods
-			}
-
-			if *namespaceFilter != "" {
-				filterNamespaces := strings.Split(*namespaceFilter, ",")
-				filterSet := make(map[string]struct{})
-				for _, ns := range filterNamespaces {
-					filterSet[strings.TrimSpace(ns)] = struct{}{}
-				}
-				var filteredPods []PodInfo
-				for _, pod := range allPodsInfo {
-					if _, ok := filterSet[pod.Namespace]; ok {
-						filteredPods = append(filteredPods, pod)
-					}
-				}
-				allPodsInfo = filteredPods
-			}
+			allPodsInfo = filterPodsByComponent(allPodsInfo, *componentFilter, k8sClient)
+			allPodsInfo = filterPodsByNamespace(allPodsInfo, *namespaceFilter)
 
 			if *limitIPs > 0 && len(allPodsInfo) > *limitIPs {
 				allPodsInfo = allPodsInfo[:*limitIPs]
@@ -134,27 +103,7 @@ func main() {
 		}
 
 		printPQCClusterResults(scanResults)
-
-		if *csvFile != "" || *jsonFile != "" || *junitFile != "" {
-			if *csvFile != "" {
-				csvPath := filepath.Join(*artifactDir, *csvFile)
-				if err := writeCSVOutput(scanResults, csvPath); err != nil {
-					log.Printf("Error writing CSV output: %v", err)
-				}
-			}
-			if *jsonFile != "" {
-				jsonPath := filepath.Join(*artifactDir, *jsonFile)
-				if err := writeJSONOutput(scanResults, jsonPath); err != nil {
-					log.Printf("Error writing JSON output: %v", err)
-				}
-			}
-			if *junitFile != "" {
-				junitPath := filepath.Join(*artifactDir, *junitFile)
-				if err := writeJUnitOutput(scanResults, junitPath); err != nil {
-					log.Printf("Error writing JUnit output: %v", err)
-				}
-			}
-		}
+		writeOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile)
 
 		finalScanResults = &scanResults
 		return
@@ -199,49 +148,9 @@ func main() {
 			log.Fatalf("Could not create kubernetes client for --all-pods: %v", err)
 		}
 
-		allPodsInfo = k8sClient.getAllPodsInfo() // get pod ip to pod name mapping
-
-		if *componentFilter != "" {
-			log.Printf("Filtering pods by component name(s): %s", *componentFilter)
-			filterComponents := strings.Split(*componentFilter, ",")
-			filterSet := make(map[string]struct{})
-			for _, c := range filterComponents {
-				filterSet[strings.TrimSpace(c)] = struct{}{}
-			}
-
-			var filteredPods []PodInfo
-			for _, pod := range allPodsInfo {
-				component, err := k8sClient.getOpenshiftComponentFromImage(pod.Image)
-				if err != nil {
-					log.Printf("Warning: could not get component for image %s: %v", pod.Image, err)
-					continue
-				}
-
-				if _, ok := filterSet[component.Component]; ok {
-					filteredPods = append(filteredPods, pod)
-				}
-			}
-			log.Printf("Filtered pods: %d remaining out of %d", len(filteredPods), len(allPodsInfo))
-			allPodsInfo = filteredPods
-		}
-
-		if *namespaceFilter != "" {
-			log.Printf("Filtering pods by namespace(s): %s", *namespaceFilter)
-			filterNamespaces := strings.Split(*namespaceFilter, ",")
-			filterSet := make(map[string]struct{})
-			for _, ns := range filterNamespaces {
-				filterSet[strings.TrimSpace(ns)] = struct{}{}
-			}
-
-			var filteredPods []PodInfo
-			for _, pod := range allPodsInfo {
-				if _, ok := filterSet[pod.Namespace]; ok {
-					filteredPods = append(filteredPods, pod)
-				}
-			}
-			log.Printf("Filtered pods by namespace: %d remaining out of %d", len(filteredPods), len(allPodsInfo))
-			allPodsInfo = filteredPods
-		}
+		allPodsInfo = k8sClient.getAllPodsInfo()
+		allPodsInfo = filterPodsByComponent(allPodsInfo, *componentFilter, k8sClient)
+		allPodsInfo = filterPodsByNamespace(allPodsInfo, *namespaceFilter)
 
 		log.Printf("Found %d pods to scan from the cluster.", len(allPodsInfo))
 
@@ -422,6 +331,49 @@ func writeJUnitOutput(scanResults ScanResults, filename string) error {
 	}
 
 	return nil
+}
+
+func filterPodsByComponent(pods []PodInfo, componentFilter string, k8sClient *K8sClient) []PodInfo {
+	if componentFilter == "" {
+		return pods
+	}
+	log.Printf("Filtering pods by component name(s): %s", componentFilter)
+	filterSet := make(map[string]struct{})
+	for _, c := range strings.Split(componentFilter, ",") {
+		filterSet[strings.TrimSpace(c)] = struct{}{}
+	}
+	var filtered []PodInfo
+	for _, pod := range pods {
+		component, err := k8sClient.getOpenshiftComponentFromImage(pod.Image)
+		if err != nil {
+			log.Printf("Warning: could not get component for image %s: %v", pod.Image, err)
+			continue
+		}
+		if _, ok := filterSet[component.Component]; ok {
+			filtered = append(filtered, pod)
+		}
+	}
+	log.Printf("Filtered pods: %d remaining out of %d", len(filtered), len(pods))
+	return filtered
+}
+
+func filterPodsByNamespace(pods []PodInfo, namespaceFilter string) []PodInfo {
+	if namespaceFilter == "" {
+		return pods
+	}
+	log.Printf("Filtering pods by namespace(s): %s", namespaceFilter)
+	filterSet := make(map[string]struct{})
+	for _, ns := range strings.Split(namespaceFilter, ",") {
+		filterSet[strings.TrimSpace(ns)] = struct{}{}
+	}
+	var filtered []PodInfo
+	for _, pod := range pods {
+		if _, ok := filterSet[pod.Namespace]; ok {
+			filtered = append(filtered, pod)
+		}
+	}
+	log.Printf("Filtered pods by namespace: %d remaining out of %d", len(filtered), len(pods))
+	return filtered
 }
 
 func isTestSSLInstalled() bool {
