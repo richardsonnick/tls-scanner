@@ -16,7 +16,7 @@ ARG TARGETARCH
 ARG TESTSSL_VERSION=3.2.2
 
 RUN dnf -y update && \
-    dnf install -y --allowerasing binutils file go podman runc jq skopeo tar lsof openssl bash curl && \
+    dnf install -y --allowerasing binutils file go podman runc jq skopeo tar lsof openssl bash && \
     dnf clean all
 
 RUN wget -O "openshift-client-linux-${OC_VERSION}.tar.gz" "https://mirror.openshift.com/pub/openshift-v4/${TARGETARCH}/clients/ocp/${OC_VERSION}/openshift-client-linux.tar.gz" && \
