@@ -49,7 +49,19 @@ func main() {
 	limitIPs := flag.Int("limit-ips", 0, "Limit the number of IPs to scan for testing purposes (0 = no limit)")
 	logFile := flag.String("log-file", "", "Redirect all log output to the specified file")
 	pqcCheck := flag.Bool("pqc-check", false, "Quick check for TLS 1.3 and ML-KEM (post-quantum) support only")
+	timingFile := flag.String("timing-file", "", "Output function timing report to specified file in artifact-dir")
 	flag.Parse()
+
+	defer func() {
+		if *timingFile != "" {
+			path := filepath.Join(*artifactDir, *timingFile)
+			if err := timings.WriteReport(path); err != nil {
+				log.Printf("Warning: Could not write timing report: %v", err)
+			} else {
+				log.Printf("Timing report written to %s", path)
+			}
+		}
+	}()
 
 	if *logFile != "" {
 		f, err := os.OpenFile(*logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
@@ -198,8 +210,11 @@ func main() {
 	defer os.Remove(tmpFileName)
 
 	cmd := exec.Command("testssl.sh", "--jsonfile", tmpFileName, "--warnings", "off", "--color", "0", "--parallel", target)
+	cmd.Env = append(os.Environ(), "MAX_PARALLEL=4")
 
+	stopTestSSL := timings.Track("testssl.sh[full]", target)
 	cmdOutput, runErr := cmd.CombinedOutput()
+	stopTestSSL()
 	if runErr != nil {
 		// testssl.sh may return non-zero exit codes even on successful scans
 		log.Printf("Warning: testssl.sh returned non-zero exit code: %v", runErr)
@@ -532,6 +547,7 @@ func extractTLSInfo(scanRun ScanRun) (versions []string, ciphers []string, ciphe
 }
 
 func performClusterScan(pods []PodInfo, concurrentScans int, k8sClient *K8sClient) ScanResults {
+	defer timings.Track("performClusterScan", "")()
 	startTime := time.Now()
 
 	totalIPs := 0
@@ -625,7 +641,48 @@ func performClusterScan(pods []PodInfo, concurrentScans int, k8sClient *K8sClien
 	return results
 }
 
+func writeTargetsFile(targets []string) (string, error) {
+	f, err := os.CreateTemp("", "testssl-targets-*.txt")
+	if err != nil {
+		return "", err
+	}
+	for _, t := range targets {
+		fmt.Fprintln(f, t)
+	}
+	f.Close()
+	return f.Name(), nil
+}
+
+// groupTestSSLOutputByPort splits a combined testssl.sh JSON output (from --file mode)
+// into per-port JSON blobs keyed by port string.
+func groupTestSSLOutputByPort(jsonData []byte) (map[string][]byte, error) {
+	var rawData []map[string]interface{}
+	if err := json.Unmarshal(jsonData, &rawData); err != nil {
+		return nil, err
+	}
+
+	grouped := make(map[string][]map[string]interface{})
+	for _, finding := range rawData {
+		port, _ := finding["port"].(string)
+		if port == "" {
+			continue
+		}
+		grouped[port] = append(grouped[port], finding)
+	}
+
+	result := make(map[string][]byte)
+	for port, findings := range grouped {
+		data, err := json.Marshal(findings)
+		if err != nil {
+			continue
+		}
+		result[port] = data
+	}
+	return result, nil
+}
+
 func scanIP(k8sClient *K8sClient, ip string, pod PodInfo, tlsSecurityProfile *TLSSecurityProfile) IPResult {
+	defer timings.Track("scanIP", ip)()
 	openPorts, err := discoverPortsFromPodSpec(pod.Pod)
 	if err != nil {
 		return IPResult{
@@ -706,35 +763,54 @@ func scanIP(k8sClient *K8sClient, ip string, pod PodInfo, tlsSecurityProfile *TL
 		return ipResult
 	}
 
-	// Scan each port individually with testssl.sh for detailed TLS analysis
-	log.Printf("Scanning %d ports on %s with testssl.sh", len(portsToScan), ip)
+	// Batch scan all ports in a single testssl.sh --file invocation
+	log.Printf("Scanning %d ports on %s with testssl.sh --file batch mode", len(portsToScan), ip)
+
+	var targets []string
+	for _, port := range portsToScan {
+		targets = append(targets, fmt.Sprintf("%s:%d", ip, port))
+	}
+
+	targetsFileName, err := writeTargetsFile(targets)
+	if err != nil {
+		log.Printf("Failed to create targets file for %s: %v", ip, err)
+		return ipResult
+	}
+	defer os.Remove(targetsFileName)
+
+	outputFile, err := os.CreateTemp("", fmt.Sprintf("testssl-%s-batch-*.json", ip))
+	if err != nil {
+		log.Printf("Failed to create output file for %s: %v", ip, err)
+		return ipResult
+	}
+	outputFileName := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputFileName)
+
+	cmd := exec.Command("testssl.sh", "--file", targetsFileName, "--jsonfile", outputFileName, "--warnings", "off", "--quiet", "--color", "0", "--parallel")
+	cmd.Env = append(os.Environ(), "MAX_PARALLEL=4")
+	stopTestSSL := timings.Track("testssl.sh[batch]", ip)
+	cmdOutput, cmdErr := cmd.CombinedOutput()
+	stopTestSSL()
+	if cmdErr != nil {
+		log.Printf("testssl.sh batch scan returned non-zero exit code for %s: %v (output: %s)", ip, cmdErr, string(cmdOutput))
+	}
+
+	jsonData, err := os.ReadFile(outputFileName)
+	if err != nil || len(jsonData) == 0 {
+		log.Printf("testssl.sh batch scan produced no output for %s: %v", ip, err)
+		return ipResult
+	}
+
+	portDataMap, err := groupTestSSLOutputByPort(jsonData)
+	if err != nil {
+		log.Printf("Error grouping testssl.sh output by port for %s: %v", ip, err)
+		return ipResult
+	}
 
 	resultsByPort := make(map[int]PortResult)
-
 	for _, port := range portsToScan {
 		portStr := strconv.Itoa(port)
-		target := fmt.Sprintf("%s:%s", ip, portStr)
-
-		// Create temp file with entropy for testssl.sh output
-		tmpFile, err := os.CreateTemp("", fmt.Sprintf("testssl-%s-%d-*.json", ip, port))
-		if err != nil {
-			log.Printf("Failed to create temp file for %s: %v", target, err)
-			continue
-		}
-		tmpFileName := tmpFile.Name()
-		tmpFile.Close() // Close so testssl.sh can write to it
-
-		log.Printf("Running testssl.sh on %s", target)
-		cmd := exec.Command("testssl.sh", "--jsonfile", tmpFileName, "--warnings", "off", "--quiet", "--color", "0", "--parallel", target)
-		output, err := cmd.CombinedOutput()
-
-		if err != nil {
-			log.Printf("testssl.sh returned non-zero exit code for %s: %v (output: %s)", target, err, string(output))
-		}
-
-		// Parse the JSON output file
-		scanResult := parseTestSSLOutputFromFile(tmpFileName, ip, portStr)
-
 		portResult := PortResult{
 			Port:     port,
 			Protocol: "tcp",
@@ -742,9 +818,11 @@ func scanIP(k8sClient *K8sClient, ip string, pod PodInfo, tlsSecurityProfile *TL
 			Service:  "ssl/tls",
 		}
 
-		portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = extractTLSInfo(scanResult)
+		if portData, ok := portDataMap[portStr]; ok {
+			scanResult := parseTestSSLOutput(portData, ip, portStr)
+			portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = extractTLSInfo(scanResult)
+		}
 
-		// Set status based on whether TLS was detected
 		if len(portResult.TlsCiphers) > 0 {
 			portResult.Status = StatusOK
 			portResult.Reason = "TLS scan successful"
@@ -754,9 +832,6 @@ func scanIP(k8sClient *K8sClient, ip string, pod PodInfo, tlsSecurityProfile *TL
 		}
 
 		resultsByPort[port] = portResult
-
-		// Clean up temp file
-		os.Remove(tmpFileName)
 	}
 
 	// Correlate results with discovered ports
@@ -879,6 +954,7 @@ func limitPodsToIPCount(pods []PodInfo, maxIPs int) []PodInfo {
 }
 
 func performTargetsScan(targetsByHost map[string][]string, concurrentScans int) ScanResults {
+	defer timings.Track("performTargetsScan", "")()
 	startTime := time.Now()
 
 	totalIPs := len(targetsByHost)
@@ -955,6 +1031,7 @@ func performTargetsScan(targetsByHost map[string][]string, concurrentScans int) 
 }
 
 func scanHostPorts(host string, ports []string) IPResult {
+	defer timings.Track("scanHostPorts", host)()
 	log.Printf("Scanning TLS on %s for ports: %s", host, strings.Join(ports, ","))
 
 	ipResult := IPResult{
@@ -967,49 +1044,53 @@ func scanHostPorts(host string, ports []string) IPResult {
 		ipResult.OpenPorts = append(ipResult.OpenPorts, p)
 	}
 
-	resultsByPort := make(map[int]PortResult)
+	// Batch scan all ports in a single testssl.sh --file invocation
+	var targets []string
+	for _, portStr := range ports {
+		targets = append(targets, fmt.Sprintf("%s:%s", host, portStr))
+	}
 
+	targetsFileName, err := writeTargetsFile(targets)
+	if err != nil {
+		log.Printf("Failed to create targets file for %s: %v", host, err)
+		return ipResult
+	}
+	defer os.Remove(targetsFileName)
+
+	outputFile, err := os.CreateTemp("", fmt.Sprintf("testssl-%s-batch-*.json", host))
+	if err != nil {
+		log.Printf("Failed to create output file for %s: %v", host, err)
+		return ipResult
+	}
+	outputFileName := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputFileName)
+
+	log.Printf("Running testssl.sh --file batch scan on %s for %d ports", host, len(ports))
+	cmd := exec.Command("testssl.sh", "--file", targetsFileName, "--jsonfile", outputFileName, "--warnings", "off", "--quiet", "--color", "0", "--parallel")
+	cmd.Env = append(os.Environ(), "MAX_PARALLEL=4")
+	stopTestSSL := timings.Track("testssl.sh[batch]", host)
+	cmdOutput, cmdErr := cmd.CombinedOutput()
+	stopTestSSL()
+	if cmdErr != nil {
+		log.Printf("testssl.sh batch scan returned non-zero exit code for %s: %v (output: %s)", host, cmdErr, string(cmdOutput))
+	}
+
+	jsonData, readErr := os.ReadFile(outputFileName)
+	if readErr != nil || len(jsonData) == 0 {
+		log.Printf("testssl.sh batch scan produced no output for %s: %v", host, readErr)
+		return ipResult
+	}
+
+	portDataMap, groupErr := groupTestSSLOutputByPort(jsonData)
+	if groupErr != nil {
+		log.Printf("Error grouping testssl.sh output by port for %s: %v", host, groupErr)
+		return ipResult
+	}
+
+	resultsByPort := make(map[int]PortResult)
 	for _, portStr := range ports {
 		port, _ := strconv.Atoi(portStr)
-		target := fmt.Sprintf("%s:%s", host, portStr)
-
-		// Create temp file with entropy for testssl.sh output
-		tmpFile, err := os.CreateTemp("", fmt.Sprintf("testssl-%s-%s-*.json", host, portStr))
-		if err != nil {
-			log.Printf("Failed to create temp file for %s: %v", target, err)
-			resultsByPort[port] = PortResult{
-				Port:   port,
-				Error:  "Failed to create temp file",
-				Status: StatusError,
-				Reason: fmt.Sprintf("Failed to create temp file: %v", err),
-			}
-			continue
-		}
-		tmpFileName := tmpFile.Name()
-		tmpFile.Close() // Close so testssl.sh can write to it
-
-		log.Printf("Running testssl.sh on %s", target)
-		cmd := exec.Command("testssl.sh", "--jsonfile", tmpFileName, "--warnings", "off", "--quiet", "--color", "0", "--parallel", target)
-		output, err := cmd.CombinedOutput()
-
-		if err != nil {
-			log.Printf("testssl.sh returned non-zero exit code for %s: %v (output: %s)", target, err, string(output))
-			resultsByPort[port] = PortResult{
-				Port:   port,
-				Error:  "testssl.sh scan failed",
-				Status: StatusError,
-				Reason: fmt.Sprintf("testssl.sh scan failed: %v", err),
-			}
-			os.Remove(tmpFileName)
-			continue
-		}
-
-		// Read raw JSON data for key exchange extraction
-		rawJSONData, readErr := readTestSSLJSONFile(tmpFileName)
-
-		// Parse the JSON output file for cipher/version info
-		scanResult := parseTestSSLOutputFromFile(tmpFileName, host, portStr)
-
 		portResult := PortResult{
 			Port:     port,
 			Protocol: "tcp",
@@ -1017,14 +1098,12 @@ func scanHostPorts(host string, ports []string) IPResult {
 			Service:  "ssl/tls",
 		}
 
-		portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = extractTLSInfo(scanResult)
-
-		// Extract key exchange and forward secrecy info from raw testssl.sh output
-		if readErr == nil && len(rawJSONData) > 0 {
-			portResult.TlsKeyExchange = extractKeyExchangeFromTestSSL(rawJSONData)
+		if portData, ok := portDataMap[portStr]; ok {
+			scanResult := parseTestSSLOutput(portData, host, portStr)
+			portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = extractTLSInfo(scanResult)
+			portResult.TlsKeyExchange = extractKeyExchangeFromTestSSL(portData)
 		}
 
-		// Set status based on whether TLS was detected
 		if len(portResult.TlsCiphers) > 0 {
 			portResult.Status = StatusOK
 			portResult.Reason = "TLS scan successful"
@@ -1034,9 +1113,6 @@ func scanHostPorts(host string, ports []string) IPResult {
 		}
 
 		resultsByPort[port] = portResult
-
-		// Clean up temp file
-		os.Remove(tmpFileName)
 	}
 
 	for _, portStr := range ports {
@@ -1430,6 +1506,7 @@ func hasPQCComplianceFailures(results ScanResults) bool {
 }
 
 func performPQCScan(targets []string, concurrentScans int) ScanResults {
+	defer timings.Track("performPQCScan", "")()
 	startTime := time.Now()
 
 	fmt.Printf("========================================\n")
@@ -1476,6 +1553,7 @@ func performPQCScan(targets []string, concurrentScans int) ScanResults {
 }
 
 func performPQCClusterScan(pods []PodInfo, k8sClient *K8sClient, concurrentScans int) ScanResults {
+	defer timings.Track("performPQCClusterScan", "")()
 	startTime := time.Now()
 
 	fmt.Printf("========================================\n")
@@ -1527,6 +1605,7 @@ func performPQCClusterScan(pods []PodInfo, k8sClient *K8sClient, concurrentScans
 }
 
 func scanPQCTarget(target string) IPResult {
+	defer timings.Track("scanPQCTarget", target)()
 	host, portStr, err := net.SplitHostPort(target)
 	if err != nil {
 		return IPResult{
@@ -1579,6 +1658,7 @@ func scanPQCTarget(target string) IPResult {
 }
 
 func scanPQCPodIP(pod PodInfo, component *OpenshiftComponent) IPResult {
+	defer timings.Track("scanPQCPodIP", pod.Name)()
 	ip := ""
 	if len(pod.IPs) > 0 {
 		ip = pod.IPs[0]
@@ -1603,30 +1683,81 @@ func scanPQCPodIP(pod PodInfo, component *OpenshiftComponent) IPResult {
 		return ipResult
 	}
 
+	// Batch PQC check all ports in a single testssl.sh --file invocation
+	var targets []string
 	for _, port := range ports {
-		target := fmt.Sprintf("%s:%d", ip, port)
-		log.Printf("PQC check on pod %s/%s at %s", pod.Namespace, pod.Name, target)
+		targets = append(targets, fmt.Sprintf("%s:%d", ip, port))
+	}
 
-		tls13, tlsVersions, mlkemSupported, mlkemKEMs, allKEMs := checkPQCWithTestSSL(target)
+	log.Printf("PQC batch check on pod %s/%s for %d ports", pod.Namespace, pod.Name, len(ports))
 
+	targetsFileName, err := writeTargetsFile(targets)
+	if err != nil {
+		log.Printf("Failed to create targets file for PQC check on %s: %v", ip, err)
+		return ipResult
+	}
+	defer os.Remove(targetsFileName)
+
+	outputFile, err := os.CreateTemp("", fmt.Sprintf("testssl-pqc-%s-batch-*.json", ip))
+	if err != nil {
+		log.Printf("Failed to create output file for PQC check on %s: %v", ip, err)
+		return ipResult
+	}
+	outputFileName := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputFileName)
+
+	cmd := exec.Command("testssl.sh", "-p", "-f", "--file", targetsFileName, "--jsonfile", outputFileName, "--quiet", "--color", "0", "--parallel")
+	cmd.Env = append(os.Environ(), "MAX_PARALLEL=4")
+	stopTestSSL := timings.Track("testssl.sh[pqc-batch]", ip)
+	cmdOutput, cmdErr := cmd.CombinedOutput()
+	stopTestSSL()
+	if cmdErr != nil {
+		log.Printf("testssl.sh PQC batch scan returned non-zero exit code for %s: %v (output: %s)", ip, cmdErr, string(cmdOutput))
+	}
+
+	jsonData, err := os.ReadFile(outputFileName)
+	if err != nil || len(jsonData) == 0 {
+		log.Printf("testssl.sh PQC batch scan produced no output for %s: %v", ip, err)
+		return ipResult
+	}
+
+	portDataMap, err := groupTestSSLOutputByPort(jsonData)
+	if err != nil {
+		log.Printf("Error grouping PQC output by port for %s: %v", ip, err)
+		return ipResult
+	}
+
+	for _, port := range ports {
+		portStr := strconv.Itoa(port)
 		portResult := PortResult{
-			Port:           port,
-			Protocol:       "tcp",
-			State:          "open",
-			TlsVersions:    tlsVersions,
-			TLS13Supported: tls13,
-			MLKEMSupported: mlkemSupported,
-			MLKEMCiphers:   mlkemKEMs,
-			AllKEMs:        allKEMs,
-			Status:         StatusOK,
+			Port:     port,
+			Protocol: "tcp",
+			State:    "open",
+			Status:   StatusOK,
 		}
 
-		if tls13 && mlkemSupported {
-			portResult.Reason = "TLS 1.3 + ML-KEM supported (PQC ready)"
-		} else if tls13 {
-			portResult.Reason = "TLS 1.3 supported, ML-KEM not available"
-		} else if len(tlsVersions) > 0 {
-			portResult.Reason = "TLS supported, TLS 1.3 not available"
+		if portData, ok := portDataMap[portStr]; ok {
+			var findings []map[string]interface{}
+			if err := json.Unmarshal(portData, &findings); err == nil {
+				tls13, tlsVersions, mlkemSupported, mlkemKEMs, allKEMs := parsePQCFindings(findings)
+				portResult.TlsVersions = tlsVersions
+				portResult.TLS13Supported = tls13
+				portResult.MLKEMSupported = mlkemSupported
+				portResult.MLKEMCiphers = mlkemKEMs
+				portResult.AllKEMs = allKEMs
+
+				if tls13 && mlkemSupported {
+					portResult.Reason = "TLS 1.3 + ML-KEM supported (PQC ready)"
+				} else if tls13 {
+					portResult.Reason = "TLS 1.3 supported, ML-KEM not available"
+				} else if len(tlsVersions) > 0 {
+					portResult.Reason = "TLS supported, TLS 1.3 not available"
+				} else {
+					portResult.Reason = "Could not determine TLS support"
+					portResult.Status = StatusNoTLS
+				}
+			}
 		} else {
 			portResult.Reason = "Could not determine TLS support"
 			portResult.Status = StatusNoTLS
@@ -1638,7 +1769,71 @@ func scanPQCPodIP(pod PodInfo, component *OpenshiftComponent) IPResult {
 	return ipResult
 }
 
+func parsePQCFindings(findings []map[string]interface{}) (tls13 bool, tlsVersions []string, mlkemSupported bool, mlkemKEMs []string, allKEMs []string) {
+	for _, f := range findings {
+		id, _ := f["id"].(string)
+		finding, _ := f["finding"].(string)
+
+		if finding == "" || finding == "not offered" || finding == "not supported" {
+			continue
+		}
+
+		if isProtocolID(id) {
+			version := extractTLSVersion(id)
+			if version != "" && strings.HasPrefix(finding, "offered") {
+				if !stringInSlice(version, tlsVersions) {
+					tlsVersions = append(tlsVersions, version)
+				}
+				if version == "TLSv1.3" {
+					tls13 = true
+				}
+			}
+		}
+
+		if id == "FS_KEMs" || strings.HasPrefix(id, "FS_KEM") {
+			for _, g := range strings.Fields(finding) {
+				if !stringInSlice(g, allKEMs) {
+					allKEMs = append(allKEMs, g)
+				}
+				if isKEMGroup(g) && !stringInSlice(g, mlkemKEMs) {
+					mlkemKEMs = append(mlkemKEMs, g)
+					mlkemSupported = true
+				}
+			}
+		}
+
+		if id == "supported_groups" || id == "named_groups" || id == "curves" {
+			for _, g := range strings.Fields(finding) {
+				if !stringInSlice(g, allKEMs) {
+					allKEMs = append(allKEMs, g)
+				}
+				if isKEMGroup(g) && !stringInSlice(g, mlkemKEMs) {
+					mlkemKEMs = append(mlkemKEMs, g)
+					mlkemSupported = true
+				}
+			}
+		}
+
+		if strings.HasPrefix(id, "group_") || strings.HasPrefix(id, "curve_") {
+			groupName := strings.TrimPrefix(id, "group_")
+			groupName = strings.TrimPrefix(groupName, "curve_")
+			if finding == "offered" || finding == "yes" || strings.Contains(strings.ToLower(finding), "supported") {
+				if !stringInSlice(groupName, allKEMs) {
+					allKEMs = append(allKEMs, groupName)
+				}
+				if isKEMGroup(groupName) && !stringInSlice(groupName, mlkemKEMs) {
+					mlkemKEMs = append(mlkemKEMs, groupName)
+					mlkemSupported = true
+				}
+			}
+		}
+	}
+
+	return
+}
+
 func checkPQCWithTestSSL(target string) (tls13 bool, tlsVersions []string, mlkemSupported bool, mlkemKEMs []string, allKEMs []string) {
+	defer timings.Track("checkPQCWithTestSSL", target)()
 	log.Printf("Checking TLS protocols and KEMs with testssl.sh -p -f for %s", target)
 
 	tmpFile, err := os.CreateTemp("", "testssl-pqc-*.json")
@@ -1658,8 +1853,11 @@ func checkPQCWithTestSSL(target string) (tls13 bool, tlsVersions []string, mlkem
 		"--ip", "one",
 		target,
 	)
+	cmd.Env = append(os.Environ(), "MAX_PARALLEL=4")
 
+	stopTestSSL := timings.Track("testssl.sh[pqc]", target)
 	output, err := cmd.CombinedOutput()
+	stopTestSSL()
 	if err != nil {
 		log.Printf("testssl.sh -p -f returned non-zero exit code for %s: %v (output: %s)", target, err, string(output))
 	}
@@ -1676,70 +1874,7 @@ func checkPQCWithTestSSL(target string) (tls13 bool, tlsVersions []string, mlkem
 		return
 	}
 
-	for _, f := range findings {
-		id, _ := f["id"].(string)
-		finding, _ := f["finding"].(string)
-
-		if finding == "" || finding == "not offered" || finding == "not supported" {
-			continue
-		}
-
-		// Protocol versions: testssl.sh uses ids like "TLS1_3", "TLS1_2", "SSLv3", etc.
-		if isProtocolID(id) {
-			version := extractTLSVersion(id)
-			if version != "" && strings.HasPrefix(finding, "offered") {
-				if !stringInSlice(version, tlsVersions) {
-					tlsVersions = append(tlsVersions, version)
-				}
-				if version == "TLSv1.3" {
-					tls13 = true
-				}
-			}
-		}
-
-		// Forward-secrecy KEMs: id "FS_KEMs" or "FS_KEM*"
-		if id == "FS_KEMs" || strings.HasPrefix(id, "FS_KEM") {
-			for _, g := range strings.Fields(finding) {
-				if !stringInSlice(g, allKEMs) {
-					allKEMs = append(allKEMs, g)
-				}
-				if isKEMGroup(g) && !stringInSlice(g, mlkemKEMs) {
-					mlkemKEMs = append(mlkemKEMs, g)
-					mlkemSupported = true
-				}
-			}
-		}
-
-		// Supported groups / named curves (may include PQ hybrids)
-		if id == "supported_groups" || id == "named_groups" || id == "curves" {
-			for _, g := range strings.Fields(finding) {
-				if !stringInSlice(g, allKEMs) {
-					allKEMs = append(allKEMs, g)
-				}
-				if isKEMGroup(g) && !stringInSlice(g, mlkemKEMs) {
-					mlkemKEMs = append(mlkemKEMs, g)
-					mlkemSupported = true
-				}
-			}
-		}
-
-		// Individual group findings: id "group_X25519MLKEM768", etc.
-		if strings.HasPrefix(id, "group_") || strings.HasPrefix(id, "curve_") {
-			groupName := strings.TrimPrefix(id, "group_")
-			groupName = strings.TrimPrefix(groupName, "curve_")
-			if finding == "offered" || finding == "yes" || strings.Contains(strings.ToLower(finding), "supported") {
-				if !stringInSlice(groupName, allKEMs) {
-					allKEMs = append(allKEMs, groupName)
-				}
-				if isKEMGroup(groupName) && !stringInSlice(groupName, mlkemKEMs) {
-					mlkemKEMs = append(mlkemKEMs, groupName)
-					mlkemSupported = true
-				}
-			}
-		}
-	}
-
-	return
+	return parsePQCFindings(findings)
 }
 
 func printPQCClusterResults(results ScanResults) {
