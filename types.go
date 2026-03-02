@@ -266,25 +266,3 @@ var ianaCipherToOpenSSLCipherMap = map[string]string{
 	"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA":    "TLS_AES_128_CBC_SHA",
 	"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA":    "TLS_AES_256_CBC_SHA",
 }
-
-type TestSSLResult struct {
-	ScanResult []TestSSLScanResult `json:"scanResult"`
-}
-
-type TestSSLScanResult struct {
-	TargetHost string           `json:"targetHost"`
-	IP         string           `json:"ip"`
-	Port       string           `json:"port"`
-	Service    string           `json:"service"`
-	Findings   []TestSSLFinding `json:"-"`
-}
-
-type TestSSLFinding struct {
-	ID       string `json:"id"`
-	IP       string `json:"ip"`
-	Port     string `json:"port"`
-	Severity string `json:"severity"`
-	Finding  string `json:"finding"`
-	CVE      string `json:"cve,omitempty"`
-	CWE      string `json:"cwe,omitempty"`
-}
