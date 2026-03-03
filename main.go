@@ -982,11 +982,19 @@ func performTargetsScan(targetsByHost map[string][]string, concurrentScans int) 
 
 	totalIPs := len(targetsByHost)
 
+	var allTargets []string
+	for host, ports := range targetsByHost {
+		for _, portStr := range ports {
+			allTargets = append(allTargets, fmt.Sprintf("%s:%s", host, portStr))
+		}
+	}
+
 	fmt.Printf("========================================\n")
 	fmt.Printf("TARGETS SCAN STARTING\n")
 	fmt.Printf("========================================\n")
 	fmt.Printf("Total hosts to scan: %d\n", totalIPs)
-	fmt.Printf("Concurrent workers: %d\n", concurrentScans)
+	fmt.Printf("Total targets: %d\n", len(allTargets))
+	fmt.Printf("MAX_PARALLEL: %d\n", concurrentScans)
 	fmt.Printf("========================================\n\n")
 
 	results := ScanResults{
@@ -995,47 +1003,90 @@ func performTargetsScan(targetsByHost map[string][]string, concurrentScans int) 
 		IPResults: make([]IPResult, 0, totalIPs),
 	}
 
-	type targetJob struct {
-		host  string
-		ports []string
+	if len(allTargets) == 0 {
+		return results
 	}
 
-	// Create a channel to send targets to workers
-	targetChan := make(chan targetJob, totalIPs)
+	targetsFileName, err := writeTargetsFile(allTargets)
+	if err != nil {
+		log.Printf("Failed to create targets file: %v", err)
+		return results
+	}
+	defer os.Remove(targetsFileName)
 
-	// Use a WaitGroup to wait for all workers to complete
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	outputFile, err := os.CreateTemp("", "testssl-targets-batch-*.json")
+	if err != nil {
+		log.Printf("Failed to create output file: %v", err)
+		return results
+	}
+	outputFileName := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputFileName)
 
-	// Start worker goroutines
-	for w := 0; w < concurrentScans; w++ {
-		workerID := w + 1
-		log.Printf("Starting WORKER %d", workerID)
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			for job := range targetChan {
-				log.Printf("WORKER %d: Processing host %s", workerID, job.host)
-				ipResult := scanHostPorts(job.host, job.ports, concurrentScans)
-
-				mu.Lock()
-				results.IPResults = append(results.IPResults, ipResult)
-				results.ScannedIPs++
-				mu.Unlock()
-				log.Printf("WORKER %d: Completed %s (%d/%d hosts done)", workerID, job.host, results.ScannedIPs, totalIPs)
-			}
-			log.Printf("WORKER %d: FINISHED", workerID)
-		}(workerID)
+	log.Printf("Running testssl.sh --file batch scan on %d targets across %d hosts", len(allTargets), totalIPs)
+	cmd := exec.Command("testssl.sh", "--file", targetsFileName, "--jsonfile", outputFileName, "--warnings", "off", "--quiet", "--color", "0", "--parallel")
+	cmd.Env = append(os.Environ(), fmt.Sprintf("MAX_PARALLEL=%d", concurrentScans))
+	stopTestSSL := timings.Track("testssl.sh[batch]", fmt.Sprintf("%d targets", len(allTargets)))
+	cmdOutput, cmdErr := cmd.CombinedOutput()
+	stopTestSSL()
+	if cmdErr != nil {
+		log.Printf("testssl.sh batch scan returned non-zero exit code: %v (output: %s)", cmdErr, string(cmdOutput))
 	}
 
-	// Send targets to workers
+	jsonData, readErr := os.ReadFile(outputFileName)
+	if readErr != nil || len(jsonData) == 0 {
+		log.Printf("testssl.sh batch scan produced no output: %v", readErr)
+		return results
+	}
+
+	grouped, groupErr := groupTestSSLOutputByIPPort(jsonData)
+	if groupErr != nil {
+		log.Printf("Error grouping testssl.sh output: %v", groupErr)
+		return results
+	}
+
 	for host, ports := range targetsByHost {
-		targetChan <- targetJob{host: host, ports: ports}
-	}
-	close(targetChan)
+		ipResult := IPResult{
+			IP:          host,
+			Status:      "scanned",
+			PortResults: make([]PortResult, 0, len(ports)),
+		}
+		for _, pStr := range ports {
+			p, _ := strconv.Atoi(pStr)
+			ipResult.OpenPorts = append(ipResult.OpenPorts, p)
+		}
 
-	// Wait for all workers to complete
-	wg.Wait()
+		for _, portStr := range ports {
+			port, _ := strconv.Atoi(portStr)
+			portResult := PortResult{
+				Port:     port,
+				Protocol: "tcp",
+				State:    "open",
+				Service:  "ssl/tls",
+			}
+
+			key := host + ":" + portStr
+			if findings, ok := grouped[key]; ok {
+				portData, _ := json.Marshal(findings)
+				scanResult := parseTestSSLOutput(portData, host, portStr)
+				portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = extractTLSInfo(scanResult)
+				portResult.TlsKeyExchange = extractKeyExchangeFromTestSSL(portData)
+			}
+
+			if len(portResult.TlsCiphers) > 0 {
+				portResult.Status = StatusOK
+				portResult.Reason = "TLS scan successful"
+			} else {
+				portResult.Status = StatusNoTLS
+				portResult.Reason = "Port open but no TLS detected"
+			}
+
+			ipResult.PortResults = append(ipResult.PortResults, portResult)
+		}
+
+		results.IPResults = append(results.IPResults, ipResult)
+		results.ScannedIPs++
+	}
 
 	duration := time.Since(startTime)
 
@@ -1044,7 +1095,7 @@ func performTargetsScan(targetsByHost map[string][]string, concurrentScans int) 
 	fmt.Printf("========================================\n")
 	fmt.Printf("Total hosts processed: %d\n", results.ScannedIPs)
 	fmt.Printf("Total time: %v\n", duration)
-	fmt.Printf("Concurrent workers used: %d\n", concurrentScans)
+	fmt.Printf("MAX_PARALLEL used: %d\n", concurrentScans)
 	if results.ScannedIPs > 0 {
 		fmt.Printf("Average time per host: %.2fs\n", duration.Seconds()/float64(results.ScannedIPs))
 	}
