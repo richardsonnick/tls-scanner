@@ -44,10 +44,10 @@ spec:
             exit $exit_code
         resources:
           requests:
-            cpu: 50m
-            memory: 64Mi
+            cpu: "32"
+            memory: 4Gi
           limits:
-            cpu: "4"
+            cpu: "32"
             memory: 4Gi
         securityContext:
           privileged: true

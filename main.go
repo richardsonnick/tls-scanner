@@ -703,7 +703,6 @@ func groupTestSSLOutputByIPPort(jsonData []byte) (map[string][]map[string]interf
 	return grouped, nil
 }
 
-
 func scanIP(k8sClient *K8sClient, ip string, pod PodInfo, tlsSecurityProfile *TLSSecurityProfile, concurrentScans int) IPResult {
 	defer timings.Track("scanIP", ip)()
 	openPorts, err := discoverPortsFromPodSpec(pod.Pod)
@@ -1024,7 +1023,7 @@ func performTargetsScan(targetsByHost map[string][]string, concurrentScans int) 
 	defer os.Remove(outputFileName)
 
 	log.Printf("Running testssl.sh --file batch scan on %d targets across %d hosts", len(allTargets), totalIPs)
-	cmd := exec.Command("testssl.sh", "--file", targetsFileName, "--jsonfile", outputFileName, "--warnings", "off", "--quiet", "--color", "0", "--parallel")
+	cmd := exec.Command("testssl.sh", "-p", "-s", "-f", "--file", targetsFileName, "--jsonfile", outputFileName, "--warnings", "off", "--quiet", "--color", "0", "--parallel")
 	cmd.Env = append(os.Environ(), fmt.Sprintf("MAX_PARALLEL=%d", concurrentScans))
 	stopTestSSL := timings.Track("testssl.sh[batch]", fmt.Sprintf("%d targets", len(allTargets)))
 	cmdOutput, cmdErr := cmd.CombinedOutput()
