@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/xml"
 	"sync"
 
 	configclientset "github.com/openshift/client-go/config/clientset/versioned"
@@ -13,57 +12,52 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// ScanRun and related types below are parse-only types used to unmarshal nmap
-// XML output. Other scanning implementations do not need to use this if they
-// can map the appropriate information into IPResult and PortResult directly.
 type ScanRun struct {
-	XMLName xml.Name `xml:"nmaprun" json:"-"`
-	Hosts   []Host   `xml:"host" json:"hosts"`
+	Hosts []Host `json:"hosts"`
 }
 
 type Host struct {
-	Status Status `xml:"status" json:"status"`
-	Ports  []Port `xml:"ports>port" json:"ports"`
+	Status Status `json:"status"`
+	Ports  []Port `json:"ports"`
 }
 
 type Port struct {
-	PortID   string   `xml:"portid,attr" json:"portid"`
-	Protocol string   `xml:"protocol,attr" json:"protocol"`
-	State    State    `xml:"state" json:"state"`
-	Service  Service  `xml:"service" json:"service"`
-	Scripts  []Script `xml:"script" json:"scripts"`
+	PortID   string   `json:"portid"`
+	Protocol string   `json:"protocol"`
+	State    State    `json:"state"`
+	Service  Service  `json:"service"`
+	Scripts  []Script `json:"scripts"`
 }
 
 type Status struct {
-	State  string `xml:"state,attr" json:"state"`
-	Reason string `xml:"reason,attr" json:"reason"`
+	State  string `json:"state"`
+	Reason string `json:"reason"`
 }
 
 type State struct {
-	State  string `xml:"state,attr" json:"state"`
-	Reason string `xml:"reason,attr" json:"reason"`
+	State  string `json:"state"`
+	Reason string `json:"reason"`
 }
 
 type Service struct {
-	Name string `xml:"name,attr" json:"name"`
+	Name string `json:"name"`
 }
 
 type Script struct {
-	ID     string  `xml:"id,attr" json:"id"`
-	Tables []Table `xml:"table" json:"tables"`
-	Elems  []Elem  `xml:"elem" json:"elems"`
+	ID     string  `json:"id"`
+	Tables []Table `json:"tables"`
+	Elems  []Elem  `json:"elems"`
 }
 
 type Table struct {
-	XMLName xml.Name `xml:"table" json:"-"`
-	Key     string   `xml:"key,attr" json:"key"`
-	Tables  []Table  `xml:"table" json:"tables"`
-	Elems   []Elem   `xml:"elem" json:"elems"`
+	Key    string  `json:"key"`
+	Tables []Table `json:"tables"`
+	Elems  []Elem  `json:"elems"`
 }
 
 type Elem struct {
-	Key   string `xml:"key,attr" json:"key"`
-	Value string `xml:",chardata" json:"value"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 type ScanResults struct {
@@ -147,6 +141,7 @@ type PortResult struct {
 	TlsVersions                  []string                   `json:"tls_versions,omitempty"`
 	TlsCiphers                   []string                   `json:"tls_ciphers,omitempty"`
 	TlsCipherStrength            map[string]string          `json:"tls_cipher_strength,omitempty"`
+	TlsKeyExchange               *KeyExchangeInfo           `json:"tls_key_exchange,omitempty"`
 	Error                        string                     `json:"error,omitempty"`
 	Status                       ScanStatus                 `json:"status"`
 	Reason                       string                     `json:"reason,omitempty"`
@@ -154,11 +149,26 @@ type PortResult struct {
 	IngressTLSConfigCompliance   *TLSConfigComplianceResult `json:"ingress_tls_config_compliance,omitempty"`
 	APIServerTLSConfigCompliance *TLSConfigComplianceResult `json:"api_server_tls_config_compliance,omitempty"`
 	KubeletTLSConfigCompliance   *TLSConfigComplianceResult `json:"kubelet_tls_config_compliance,omitempty"`
+	TLS13Supported               bool                       `json:"tls13_supported,omitempty"`
+	MLKEMSupported               bool                       `json:"mlkem_supported,omitempty"`
+	MLKEMCiphers                 []string                   `json:"mlkem_kems,omitempty"`
+	AllKEMs                      []string                   `json:"all_kems,omitempty"`
 }
 
 type TLSConfigComplianceResult struct {
 	Version bool `json:"version"`
 	Ciphers bool `json:"ciphers"`
+}
+
+type ForwardSecrecy struct {
+	Supported bool     `json:"supported"`
+	ECDHE     []string `json:"ecdhe,omitempty"` // ECDHE key exchange groups (e.g., x25519, secp256r1)
+	KEMs      []string `json:"kems,omitempty"`  // KEM-based key exchanges (e.g., ML-KEM-768, X25519MLKEM768)
+}
+
+type KeyExchangeInfo struct {
+	Groups         []string        `json:"groups,omitempty"`          // Supported key exchange groups
+	ForwardSecrecy *ForwardSecrecy `json:"forward_secrecy,omitempty"` // Forward secrecy details
 }
 
 type OpenshiftComponent struct {
@@ -255,4 +265,26 @@ var ianaCipherToOpenSSLCipherMap = map[string]string{
 	"TLS_AKE_WITH_CHACHA20_POLY1305_SHA256": "TLS_CHACHA20_POLY1305_SHA256",
 	"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA":    "TLS_AES_128_CBC_SHA",
 	"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA":    "TLS_AES_256_CBC_SHA",
+}
+
+type TestSSLResult struct {
+	ScanResult []TestSSLScanResult `json:"scanResult"`
+}
+
+type TestSSLScanResult struct {
+	TargetHost string           `json:"targetHost"`
+	IP         string           `json:"ip"`
+	Port       string           `json:"port"`
+	Service    string           `json:"service"`
+	Findings   []TestSSLFinding `json:"-"`
+}
+
+type TestSSLFinding struct {
+	ID       string `json:"id"`
+	IP       string `json:"ip"`
+	Port     string `json:"port"`
+	Severity string `json:"severity"`
+	Finding  string `json:"finding"`
+	CVE      string `json:"cve,omitempty"`
+	CWE      string `json:"cwe,omitempty"`
 }
