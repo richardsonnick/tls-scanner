@@ -73,12 +73,11 @@ func NewClient() (*Client, error) {
 	}, nil
 }
 
-func (c *Client) GetAllPodsInfo() []PodInfo {
+func (c *Client) GetAllPodsInfo() ([]PodInfo, error) {
 	log.Println("Getting all pods from the cluster...")
 	pods, err := c.clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		log.Printf("Warning: Could not list pods: %v", err)
-		return nil
+		return nil, fmt.Errorf("could not list pods: %w", err)
 	}
 
 	var allPodsInfo []PodInfo
@@ -120,7 +119,7 @@ func (c *Client) GetAllPodsInfo() []PodInfo {
 	}
 	log.Printf("IP discovery summary: %d total IPs across %d pods (%d unique IPs).", totalIPs, len(allPodsInfo), len(uniqueIPs))
 
-	return allPodsInfo
+	return allPodsInfo, nil
 }
 
 func (c *Client) FilterPodsByComponent(pods []PodInfo, componentFilter string) []PodInfo {

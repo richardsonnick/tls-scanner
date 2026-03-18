@@ -172,9 +172,18 @@ func run(args []string) (exitCode int) {
 			return 1
 		}
 
-		pods = client.GetAllPodsInfo()
+		pods, err = client.GetAllPodsInfo()
+		if err != nil {
+			log.Printf("Error listing pods: %v", err)
+			return 1
+		}
 		pods = client.FilterPodsByComponent(pods, *componentFilter)
 		pods = k8s.FilterPodsByNamespace(pods, *namespaceFilter)
+
+		if len(pods) == 0 {
+			log.Print("Warning: no pods found matching the given filters, nothing to scan")
+			return 0
+		}
 
 		log.Printf("Found %d pods to scan from the cluster.", len(pods))
 
