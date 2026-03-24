@@ -125,7 +125,13 @@ func (c *Client) DiscoverPortsFromProc(pod PodInfo) ([]int, error) {
 
 // ParseProcNetTCPWithAddrs parses /proc/net/tcp (and /proc/net/tcp6) output and
 // returns a map of port → decoded listen address for every socket in the LISTEN
-// state. When the same port appears multiple times the first entry wins.
+// state.
+//
+// When the same port appears on multiple rows (e.g. SO_REUSEPORT with mixed
+// bindings, or the same port in both /proc/net/tcp and /proc/net/tcp6), a
+// reachable address (0.0.0.0, ::, or any non-loopback) always takes precedence
+// over a loopback address. This prevents a false LOCALHOST_ONLY classification
+// when a port is bound to both 127.0.0.1 and 0.0.0.0.
 //
 // Addresses are returned as standard Go strings: "127.0.0.1", "0.0.0.0", "::1", "::", etc.
 func ParseProcNetTCPWithAddrs(output string) map[int]string {
@@ -150,9 +156,16 @@ func ParseProcNetTCPWithAddrs(output string) map[int]string {
 			continue
 		}
 		port := int(port64)
+		addr := decodeProcNetAddr(parts[0])
 
-		if _, exists := result[port]; !exists {
-			result[port] = decodeProcNetAddr(parts[0])
+		existing, seen := result[port]
+		if !seen {
+			result[port] = addr
+		} else if isLocalhostAddr(existing) && !isLocalhostAddr(addr) {
+			// A reachable binding overrides a previously recorded loopback one.
+			// The inverse is never allowed: once we know a port is reachable we
+			// do not let a later loopback row make it look localhost-only.
+			result[port] = addr
 		}
 	}
 
