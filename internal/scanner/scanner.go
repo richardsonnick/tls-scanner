@@ -76,79 +76,110 @@ func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Cli
 					component, _ = client.GetOpenshiftComponentFromImage(pod.Image)
 				}
 
-				specPorts, _ := k8s.DiscoverPortsFromPodSpec(pod.Pod)
-				var procPorts []int
-				if client != nil {
-					var err error
-					procPorts, err = client.DiscoverPortsFromProc(pod)
-					if err != nil {
-						log.Printf("Warning: /proc port discovery failed for %s/%s: %v", pod.Namespace, pod.Name, err)
+			specPorts, _ := k8s.DiscoverPortsFromPodSpec(pod.Pod)
+			var procPorts []int
+			if client != nil {
+				var err error
+				procPorts, err = client.DiscoverPortsFromProc(pod)
+				if err != nil {
+					log.Printf("Warning: /proc port discovery failed for %s/%s: %v", pod.Namespace, pod.Name, err)
+				}
+			}
+
+			var processMap map[string]map[int]string
+			if client != nil && len(pod.Containers) > 0 {
+				processMap = client.GetAndCachePodProcesses(pod)
+			}
+
+			if pod.Pod.Spec.HostNetwork && processMap != nil && len(procPorts) > 0 {
+				procPorts = filterByProcessPorts(processMap, procPorts)
+			}
+
+			openPorts := k8s.UnionPorts(specPorts, procPorts)
+
+			// Identify plaintext probe ports up front so we can skip them below.
+			probePorts := k8s.GetPlaintextProbePorts(pod.Pod)
+
+			log.Printf("DISCOVERY %d: %s/%s hostNet=%v spec=%v proc=%v union=%v probePorts=%v (%d ports)",
+				workerID, pod.Namespace, pod.Name, pod.Pod.Spec.HostNetwork, specPorts, procPorts, openPorts, probePorts, len(openPorts))
+
+			for _, ip := range pod.IPs {
+				if len(openPorts) == 0 {
+					progress.PortSkipped()
+					mu.Lock()
+					localhostResults = append(localhostResults, portScanResult{
+						ip:        ip,
+						pod:       pod,
+						component: component,
+						result: PortResult{
+							Port:   0,
+							Status: StatusNoPorts,
+							Reason: "No listening TCP ports found (spec or /proc/net/tcp)",
+						},
+					})
+					mu.Unlock()
+					continue
+				}
+
+				for _, port := range openPorts {
+					if client != nil {
+						if isLocalhost, listenAddr := client.IsLocalhostOnly(ip, port); isLocalhost {
+							log.Printf("Port %d on %s is bound to localhost only (%s), skipping", port, ip, listenAddr)
+							pr := PortResult{
+								Port:          port,
+								Protocol:      "tcp",
+								State:         "localhost",
+								Status:        StatusLocalhostOnly,
+								Reason:        fmt.Sprintf("Bound to %s, not accessible from pod IP", listenAddr),
+								ListenAddress: listenAddr,
+							}
+							if processName, ok := client.GetProcessName(ip, port); ok {
+								pr.ProcessName = processName
+								pr.ContainerName = strings.Join(pod.Containers, ",")
+							}
+							progress.PortSkipped()
+							mu.Lock()
+							localhostResults = append(localhostResults, portScanResult{
+								ip: ip, pod: pod, component: component, result: pr,
+							})
+							mu.Unlock()
+							continue
+						}
 					}
-				}
 
-				var processMap map[string]map[int]string
-				if client != nil && len(pod.Containers) > 0 {
-					processMap = client.GetAndCachePodProcesses(pod)
-				}
-
-				if pod.Pod.Spec.HostNetwork && processMap != nil && len(procPorts) > 0 {
-					procPorts = filterByProcessPorts(processMap, procPorts)
-				}
-
-				openPorts := k8s.UnionPorts(specPorts, procPorts)
-
-				log.Printf("DISCOVERY %d: %s/%s hostNet=%v spec=%v proc=%v union=%v (%d ports)",
-					workerID, pod.Namespace, pod.Name, pod.Pod.Spec.HostNetwork, specPorts, procPorts, openPorts, len(openPorts))
-
-				for _, ip := range pod.IPs {
-					if len(openPorts) == 0 {
+					if probePorts[port] {
+						log.Printf("Port %d on %s is a plaintext health probe endpoint, skipping TLS scan", port, ip)
+						pr := PortResult{
+							Port:     port,
+							Protocol: "tcp",
+							State:    "open",
+							Status:   StatusProbePort,
+							Reason:   "Port is used as a plaintext health probe endpoint (HTTP/TCP/gRPC), TLS not expected",
+						}
+						if client != nil {
+							if processName, ok := client.GetProcessName(ip, port); ok {
+								pr.ProcessName = processName
+								pr.ContainerName = strings.Join(pod.Containers, ",")
+							}
+							if info, ok := client.GetListenInfo(ip, port); ok {
+								pr.ListenAddress = info.ListenAddress
+							}
+						}
 						progress.PortSkipped()
 						mu.Lock()
 						localhostResults = append(localhostResults, portScanResult{
-							ip:        ip,
-							pod:       pod,
-							component: component,
-							result: PortResult{
-								Port:   0,
-								Status: StatusNoPorts,
-								Reason: "No listening TCP ports found (spec or /proc/net/tcp)",
-							},
+							ip: ip, pod: pod, component: component, result: pr,
 						})
 						mu.Unlock()
 						continue
 					}
 
-					for _, port := range openPorts {
-						if client != nil {
-							if isLocalhost, listenAddr := client.IsLocalhostOnly(ip, port); isLocalhost {
-								log.Printf("Port %d on %s is bound to localhost only (%s), skipping", port, ip, listenAddr)
-								pr := PortResult{
-									Port:          port,
-									Protocol:      "tcp",
-									State:         "localhost",
-									Status:        StatusLocalhostOnly,
-									Reason:        fmt.Sprintf("Bound to %s, not accessible from pod IP", listenAddr),
-									ListenAddress: listenAddr,
-								}
-								if processName, ok := client.GetProcessName(ip, port); ok {
-									pr.ProcessName = processName
-									pr.ContainerName = strings.Join(pod.Containers, ",")
-								}
-								progress.PortSkipped()
-								mu.Lock()
-								localhostResults = append(localhostResults, portScanResult{
-									ip: ip, pod: pod, component: component, result: pr,
-								})
-								mu.Unlock()
-								continue
-							}
-						}
-						progress.PortQueued()
-						mu.Lock()
-						scanJobs = append(scanJobs, ScanJob{IP: ip, Port: port, Pod: pod, Component: component})
-						mu.Unlock()
-					}
+					progress.PortQueued()
+					mu.Lock()
+					scanJobs = append(scanJobs, ScanJob{IP: ip, Port: port, Pod: pod, Component: component})
+					mu.Unlock()
 				}
+			}
 			}
 		}(w + 1)
 	}

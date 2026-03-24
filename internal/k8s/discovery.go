@@ -12,6 +12,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 )
@@ -200,7 +201,68 @@ func decodeProcNetAddr(hexAddr string) string {
 	}
 }
 
+// GetPlaintextProbePorts returns the set of port numbers that are referenced by
+// any liveness, readiness, or startup probe that does NOT use TLS (i.e. HTTP,
+// TCPSocket, or gRPC probes). Ports used by HTTPS probes are excluded so that
+// they continue to be scanned normally.
+//
+// Port references that use named ports (e.g. "healthz") are resolved against
+// each container's declared Ports list.
+func GetPlaintextProbePorts(pod *v1.Pod) map[int]bool {
+	result := make(map[int]bool)
 
+	for _, container := range pod.Spec.Containers {
+		namedPorts := buildNamedPortMap(container.Ports)
+
+		for _, probe := range []*v1.Probe{
+			container.LivenessProbe,
+			container.ReadinessProbe,
+			container.StartupProbe,
+		} {
+			if probe == nil {
+				continue
+			}
+			switch {
+			case probe.HTTPGet != nil:
+				if probe.HTTPGet.Scheme == v1.URISchemeHTTPS {
+					// HTTPS probe — TLS is explicitly in use; keep scanning this port.
+					continue
+				}
+				if port := resolveProbePort(probe.HTTPGet.Port, namedPorts); port > 0 {
+					result[port] = true
+				}
+			case probe.TCPSocket != nil:
+				if port := resolveProbePort(probe.TCPSocket.Port, namedPorts); port > 0 {
+					result[port] = true
+				}
+			case probe.GRPC != nil:
+				result[int(probe.GRPC.Port)] = true
+			}
+		}
+	}
+
+	return result
+}
+
+// buildNamedPortMap returns a name → port number map from a container's port list.
+func buildNamedPortMap(ports []v1.ContainerPort) map[string]int {
+	m := make(map[string]int, len(ports))
+	for _, p := range ports {
+		if p.Name != "" {
+			m[p.Name] = int(p.ContainerPort)
+		}
+	}
+	return m
+}
+
+// resolveProbePort resolves an IntOrString probe port to its integer value.
+// Named ports are looked up in namedPorts. Returns 0 if the name is not found.
+func resolveProbePort(port intstr.IntOrString, namedPorts map[string]int) int {
+	if port.Type == intstr.Int {
+		return int(port.IntVal)
+	}
+	return namedPorts[port.StrVal]
+}
 func UnionPorts(a, b []int) []int {
 	seen := make(map[int]struct{}, len(a)+len(b))
 	var result []int
