@@ -263,6 +263,7 @@ func resolveProbePort(port intstr.IntOrString, namedPorts map[string]int) int {
 	}
 	return namedPorts[port.StrVal]
 }
+
 func UnionPorts(a, b []int) []int {
 	seen := make(map[int]struct{}, len(a)+len(b))
 	var result []int
