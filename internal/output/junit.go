@@ -71,7 +71,8 @@ func WriteJUnitOutput(scanResults scanner.ScanResults, filename string, pqcCheck
 
 			if pqcCheck && portResult.Status != scanner.StatusNoPorts &&
 				portResult.Status != scanner.StatusLocalhostOnly &&
-				portResult.Status != scanner.StatusNoTLS {
+				portResult.Status != scanner.StatusNoTLS &&
+				portResult.Status != scanner.StatusProbePort {
 				if !portResult.TLS13Supported {
 					failures = append(failures, "PQC: TLS 1.3 not supported.")
 				}

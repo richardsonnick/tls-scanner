@@ -5,7 +5,7 @@ import "log"
 type PortFilter func(status ScanStatus) bool
 
 var SkipUnscannable PortFilter = func(status ScanStatus) bool {
-	return status == StatusNoPorts || status == StatusLocalhostOnly || status == StatusNoTLS
+	return status == StatusNoPorts || status == StatusLocalhostOnly || status == StatusNoTLS || status == StatusProbePort
 }
 
 var (
