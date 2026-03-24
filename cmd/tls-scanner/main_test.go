@@ -23,8 +23,13 @@ done
 printf '['
 FIRST=true
 while IFS= read -r target; do
-    ip="${target%%:*}"
-    port="${target##*:}"
+    if [[ "$target" =~ ^\[(.*)\]:(.*)$ ]]; then
+        ip="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+    else
+        ip="${target%:*}"
+        port="${target##*:}"
+    fi
     [ "$FIRST" = true ] && FIRST=false || printf ','
     printf '{"id":"TLS1_2","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
     printf '{"id":"TLS1_3","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
@@ -136,6 +141,60 @@ func TestSingleHostPath(t *testing.T) {
 	pr := ir.PortResults[0]
 	if pr.Port != 8443 {
 		t.Errorf("expected port 8443, got %d", pr.Port)
+	}
+}
+
+func TestTargetsPathIPv6(t *testing.T) {
+	installMockTestSSL(t)
+	outDir := t.TempDir()
+	target := "[fd2e:6f44:5dd8:c956::16]:6385"
+
+	code := run([]string{
+		"--targets", target,
+		"--json-file", "results.json",
+		"--artifact-dir", outDir,
+		"-j", "1",
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	results := readJSONResults(t, outDir, "results.json")
+	if results.ScannedIPs != 1 {
+		t.Fatalf("expected 1 scanned IP, got %d", results.ScannedIPs)
+	}
+	if len(results.IPResults) == 0 {
+		t.Fatal("no IP results")
+	}
+	if results.IPResults[0].IP != "fd2e:6f44:5dd8:c956::16" {
+		t.Fatalf("expected IPv6 result, got %s", results.IPResults[0].IP)
+	}
+}
+
+func TestSingleHostPathIPv6(t *testing.T) {
+	installMockTestSSL(t)
+	outDir := t.TempDir()
+
+	code := run([]string{
+		"--host", "fd2e:6f44:5dd8:c956::16",
+		"--port", "6385",
+		"--json-file", "results.json",
+		"--artifact-dir", outDir,
+		"-j", "1",
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	results := readJSONResults(t, outDir, "results.json")
+	if results.ScannedIPs != 1 {
+		t.Fatalf("expected 1 scanned IP, got %d", results.ScannedIPs)
+	}
+	if len(results.IPResults) == 0 {
+		t.Fatal("no IP results")
+	}
+	if results.IPResults[0].IP != "fd2e:6f44:5dd8:c956::16" {
+		t.Fatalf("expected IPv6 result, got %s", results.IPResults[0].IP)
 	}
 }
 

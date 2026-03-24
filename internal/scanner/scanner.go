@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -228,7 +229,7 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 	jobIndex := make(map[string]ScanJob, len(jobs))
 	targets := make([]string, 0, len(jobs))
 	for _, job := range jobs {
-		key := fmt.Sprintf("%s:%d", job.IP, job.Port)
+		key := targetKey(job.IP, strconv.Itoa(job.Port))
 		jobIndex[key] = job
 		targets = append(targets, key)
 	}
@@ -461,7 +462,7 @@ func deduplicateScanJobs(jobs []ScanJob) []ScanJob {
 	seen := make(map[string]bool, len(jobs))
 	var unique []ScanJob
 	for _, job := range jobs {
-		key := fmt.Sprintf("%s:%d", job.IP, job.Port)
+		key := targetKey(job.IP, strconv.Itoa(job.Port))
 		if seen[key] {
 			continue
 		}
@@ -481,4 +482,16 @@ func writeTargetsFile(targets []string) (string, error) {
 	}
 	f.Close()
 	return f.Name(), nil
+}
+
+func targetKey(host, port string) string {
+	return net.JoinHostPort(normalizeTargetHost(host), port)
+}
+
+func normalizeTargetHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") && len(host) >= 2 {
+		return host[1 : len(host)-1]
+	}
+	return host
 }

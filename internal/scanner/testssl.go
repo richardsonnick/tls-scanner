@@ -329,7 +329,7 @@ func GroupTestSSLOutputByIPPort(jsonData []byte) (map[string][]map[string]interf
 		if ip == "" || port == "" {
 			continue
 		}
-		key := ip + ":" + port
+		key := targetKey(ip, port)
 		grouped[key] = append(grouped[key], finding)
 	}
 

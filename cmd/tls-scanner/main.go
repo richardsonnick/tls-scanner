@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -131,17 +132,12 @@ func run(args []string) (exitCode int) {
 
 		var jobs []scanner.ScanJob
 		for _, t := range targetList {
-			parts := strings.Split(t, ":")
-			if len(parts) != 2 {
+			hostValue, portValue, err := parseTarget(t)
+			if err != nil {
 				log.Printf("Warning: Skipping invalid target format: %s (expected host:port)", t)
 				continue
 			}
-			p, err := strconv.Atoi(parts[1])
-			if err != nil {
-				log.Printf("Warning: Skipping invalid port: %s", parts[1])
-				continue
-			}
-			jobs = append(jobs, scanner.ScanJob{IP: parts[0], Port: p})
+			jobs = append(jobs, scanner.ScanJob{IP: hostValue, Port: portValue})
 		}
 
 		if len(jobs) == 0 {
@@ -228,7 +224,7 @@ func run(args []string) (exitCode int) {
 		return 1
 	}
 
-	jobs := []scanner.ScanJob{{IP: *host, Port: portNum}}
+	jobs := []scanner.ScanJob{{IP: normalizeHost(*host), Port: portNum}}
 	scanResults := scanner.Scan(jobs, *concurrentScans, client, nil)
 	finalScanResults = &scanResults
 
@@ -243,4 +239,42 @@ func run(args []string) (exitCode int) {
 	}
 
 	return
+}
+
+func parseTarget(target string) (string, int, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", 0, fmt.Errorf("empty target")
+	}
+
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		// Support unbracketed IPv6 targets by splitting on the last colon.
+		// Example: fd2e:6f44:5dd8:c956::16:6385
+		if strings.Count(target, ":") > 1 && !strings.HasPrefix(target, "[") {
+			idx := strings.LastIndex(target, ":")
+			if idx <= 0 || idx >= len(target)-1 {
+				return "", 0, err
+			}
+			host = target[:idx]
+			port = target[idx+1:]
+		} else {
+			return "", 0, err
+		}
+	}
+
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return normalizeHost(host), portNum, nil
+}
+
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") && len(host) >= 2 {
+		return host[1 : len(host)-1]
+	}
+	return host
 }
