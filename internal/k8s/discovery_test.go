@@ -178,6 +178,7 @@ func TestParseProcNetTCP(t *testing.T) {
 		})
 	}
 }
+
 func intPort(n int) intstr.IntOrString     { return intstr.FromInt(n) }
 func namedPort(s string) intstr.IntOrString { return intstr.FromString(s) }
 
