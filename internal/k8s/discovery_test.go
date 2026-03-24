@@ -160,7 +160,6 @@ func TestParseProcNetTCP(t *testing.T) {
 		})
 	}
 }
-
 func TestUnionPorts(t *testing.T) {
 	tests := []struct {
 		name string

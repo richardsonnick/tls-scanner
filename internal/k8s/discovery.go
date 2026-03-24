@@ -52,6 +52,11 @@ func (c *Client) DiscoverPortsFromProc(pod PodInfo) ([]int, error) {
 		return nil, fmt.Errorf("pod %s/%s has no containers", pod.Namespace, pod.Name)
 	}
 
+	// /proc/net/tcp is part of the network namespace, which is shared across
+	// ALL containers in a pod. Reading from Containers[0] gives complete
+	// visibility into every listening socket, including those owned by
+	// *secondary* containers (which have separate PID namespaces and are
+	// therefore invisible to lsof).
 	command := []string{"/bin/sh", "-c", "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null"}
 	containerName := pod.Containers[0]
 
@@ -90,7 +95,29 @@ func (c *Client) DiscoverPortsFromProc(pod PodInfo) ([]int, error) {
 		return nil, fmt.Errorf("exec cat /proc/net/tcp in pod %s/%s failed: %w", pod.Namespace, pod.Name, err)
 	}
 
-	ports := ParseProcNetTCP(stdout.String())
+	addrMap := ParseProcNetTCPWithAddrs(stdout.String())
+
+	// Cache the decoded listen addresses so IsLocalhostOnly can use them as a
+	// fallback for ports owned by secondary containers (invisible to lsof).
+	if len(addrMap) > 0 {
+		c.processCacheMutex.Lock()
+		for _, ip := range pod.IPs {
+			if _, ok := c.procListenAddrMap[ip]; !ok {
+				c.procListenAddrMap[ip] = make(map[int]string)
+			}
+			for port, addr := range addrMap {
+				if _, exists := c.procListenAddrMap[ip][port]; !exists {
+					c.procListenAddrMap[ip][port] = addr
+				}
+			}
+		}
+		c.processCacheMutex.Unlock()
+	}
+
+	ports := make([]int, 0, len(addrMap))
+	for port := range addrMap {
+		ports = append(ports, port)
+	}
 	log.Printf("Discovered %d listening ports from /proc/net/tcp in pod %s/%s: %v", len(ports), pod.Namespace, pod.Name, ports)
 	return ports, nil
 }
@@ -172,6 +199,7 @@ func decodeProcNetAddr(hexAddr string) string {
 		return hexAddr
 	}
 }
+
 
 func UnionPorts(a, b []int) []int {
 	seen := make(map[int]struct{}, len(a)+len(b))
