@@ -3,8 +3,10 @@ package k8s
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -93,23 +95,24 @@ func (c *Client) DiscoverPortsFromProc(pod PodInfo) ([]int, error) {
 	return ports, nil
 }
 
-func ParseProcNetTCP(output string) []int {
-	seen := make(map[int]struct{})
-	var ports []int
+// ParseProcNetTCPWithAddrs parses /proc/net/tcp (and /proc/net/tcp6) output and
+// returns a map of port → decoded listen address for every socket in the LISTEN
+// state. When the same port appears multiple times the first entry wins.
+//
+// Addresses are returned as standard Go strings: "127.0.0.1", "0.0.0.0", "::1", "::", etc.
+func ParseProcNetTCPWithAddrs(output string) map[int]string {
+	result := make(map[int]string)
 
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
 		}
-
-		state := fields[3]
-		if state != procStateListen {
+		if fields[3] != procStateListen {
 			continue
 		}
 
-		localAddr := fields[1]
-		parts := strings.Split(localAddr, ":")
+		parts := strings.SplitN(fields[1], ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
@@ -120,13 +123,54 @@ func ParseProcNetTCP(output string) []int {
 		}
 		port := int(port64)
 
-		if _, ok := seen[port]; !ok {
-			seen[port] = struct{}{}
-			ports = append(ports, port)
+		if _, exists := result[port]; !exists {
+			result[port] = decodeProcNetAddr(parts[0])
 		}
 	}
 
+	return result
+}
+
+// ParseProcNetTCP returns the list of listening port numbers.
+// It is a thin wrapper around ParseProcNetTCPWithAddrs that discards addresses.
+func ParseProcNetTCP(output string) []int {
+	addrMap := ParseProcNetTCPWithAddrs(output)
+	if len(addrMap) == 0 {
+		return nil
+	}
+	ports := make([]int, 0, len(addrMap))
+	for port := range addrMap {
+		ports = append(ports, port)
+	}
 	return ports
+}
+
+// decodeProcNetAddr converts a hex local-address field from /proc/net/tcp or
+// /proc/net/tcp6 into a human-readable IP string.
+//
+// IPv4 entries are 8 hex characters representing a little-endian uint32.
+// IPv6 entries are 32 hex characters representing four consecutive little-endian uint32s.
+func decodeProcNetAddr(hexAddr string) string {
+	b, err := hex.DecodeString(hexAddr)
+	if err != nil {
+		return hexAddr
+	}
+
+	switch len(b) {
+	case 4: // IPv4 — little-endian uint32
+		return fmt.Sprintf("%d.%d.%d.%d", b[3], b[2], b[1], b[0])
+	case 16: // IPv6 — four consecutive little-endian uint32s
+		decoded := make([]byte, 16)
+		for i := 0; i < 4; i++ {
+			decoded[i*4+0] = b[i*4+3]
+			decoded[i*4+1] = b[i*4+2]
+			decoded[i*4+2] = b[i*4+1]
+			decoded[i*4+3] = b[i*4+0]
+		}
+		return net.IP(decoded).String()
+	default:
+		return hexAddr
+	}
 }
 
 func UnionPorts(a, b []int) []int {
