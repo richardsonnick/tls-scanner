@@ -36,11 +36,25 @@ func TestParseProcNetTCPWithAddrs(t *testing.T) {
 			want: map[int]string{443: "::"},
 		},
 		{
-			name: "duplicate port keeps first",
+			name: "wildcard before localhost — wildcard wins",
 			input: `  sl  local_address rem_address   st
    0: 00000000:01BB 00000000:0000 0A
    1: 0100007F:01BB 00000000:0000 0A`,
 			want: map[int]string{443: "0.0.0.0"},
+		},
+		{
+			name: "localhost before wildcard — wildcard still wins",
+			input: `  sl  local_address rem_address   st
+   0: 0100007F:01BB 00000000:0000 0A
+   1: 00000000:01BB 00000000:0000 0A`,
+			want: map[int]string{443: "0.0.0.0"},
+		},
+		{
+			name: "two localhost rows — stays localhost",
+			input: `  sl  local_address rem_address   st
+   0: 0100007F:1F90 00000000:0000 0A
+   1: 0100007F:1F90 00000000:0000 0A`,
+			want: map[int]string{8080: "127.0.0.1"},
 		},
 		{
 			name: "non-listen state skipped",
