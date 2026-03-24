@@ -6,6 +6,85 @@ import (
 	"testing"
 )
 
+func TestParseProcNetTCPWithAddrs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  map[int]string
+	}{
+		{
+			name: "ipv4 localhost and wildcard",
+			input: `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:2438 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
+   1: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2 1 0000000000000000 100 0 0 10 0`,
+			want: map[int]string{9272: "127.0.0.1", 8080: "0.0.0.0"},
+		},
+		{
+			name: "ipv6 localhost",
+			input: `  sl  local_address                         remote_address                        st
+   0: 00000000000000000000000001000000:2710 00000000000000000000000000000000:0000 0A`,
+			want: map[int]string{10000: "::1"},
+		},
+		{
+			name: "ipv6 wildcard",
+			input: `  sl  local_address                         remote_address                        st
+   0: 00000000000000000000000000000000:01BB 00000000000000000000000000000000:0000 0A`,
+			want: map[int]string{443: "::"},
+		},
+		{
+			name: "duplicate port keeps first",
+			input: `  sl  local_address rem_address   st
+   0: 00000000:01BB 00000000:0000 0A
+   1: 0100007F:01BB 00000000:0000 0A`,
+			want: map[int]string{443: "0.0.0.0"},
+		},
+		{
+			name: "non-listen state skipped",
+			input: `  sl  local_address rem_address   st
+   0: 0100007F:C350 AC100164:01BB 01
+   1: 00000000:01BB 00000000:0000 0A`,
+			want: map[int]string{443: "0.0.0.0"},
+		},
+		{
+			name:  "empty input",
+			input: "",
+			want:  map[int]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseProcNetTCPWithAddrs(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseProcNetTCPWithAddrs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeProcNetAddr(t *testing.T) {
+	tests := []struct {
+		hex  string
+		want string
+	}{
+		{"0100007F", "127.0.0.1"},
+		{"00000000", "0.0.0.0"},
+		{"0101A8C0", "192.168.1.1"},
+		{"00000000000000000000000001000000", "::1"},
+		{"00000000000000000000000000000000", "::"},
+		{"invalid!", "invalid!"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.hex, func(t *testing.T) {
+			got := decodeProcNetAddr(tt.hex)
+			if got != tt.want {
+				t.Errorf("decodeProcNetAddr(%q) = %q, want %q", tt.hex, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseProcNetTCP(t *testing.T) {
 	tests := []struct {
 		name  string
