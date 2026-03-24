@@ -18,49 +18,62 @@ func getMinVersionValue(versions []string) int {
 	return minVersion
 }
 
+type profileInput struct {
+	profileType    string
+	minTLSVersion  string
+	expectedCiphers []string
+	result         *TLSConfigComplianceResult
+}
+
+func evaluateCompliance(scannedMinVer int, scannedCiphers []string, input profileInput) {
+	input.result.ConfiguredProfile = input.profileType
+	if input.minTLSVersion != "" {
+		input.result.Version = scannedMinVer >= TLSVersionValueMap[input.minTLSVersion]
+	} else {
+		input.result.Version = true
+	}
+	input.result.Ciphers = checkCipherCompliance(scannedCiphers, input.expectedCiphers)
+}
+
 func CheckCompliance(portResult *PortResult, tlsProfile *k8s.TLSSecurityProfile) {
-	portResultMinVersion := 0
+	scannedMinVer := 0
 	if portResult.TlsVersions != nil {
-		portResultMinVersion = getMinVersionValue(portResult.TlsVersions)
+		scannedMinVer = getMinVersionValue(portResult.TlsVersions)
 	}
 
 	portResult.IngressTLSConfigCompliance = &TLSConfigComplianceResult{}
 	portResult.APIServerTLSConfigCompliance = &TLSConfigComplianceResult{}
 	portResult.KubeletTLSConfigCompliance = &TLSConfigComplianceResult{}
 
-	if ingress := tlsProfile.IngressController; tlsProfile.IngressController != nil {
-		if ingress.MinTLSVersion != "" {
-			ingressMinVersion := TLSVersionValueMap[ingress.MinTLSVersion]
-			portResult.IngressTLSConfigCompliance.Version = (portResultMinVersion >= ingressMinVersion)
-		}
-		portResult.IngressTLSConfigCompliance.Ciphers = checkCipherCompliance(portResult.TlsCiphers, ingress.Ciphers)
+	var profiles []profileInput
+
+	if ing := tlsProfile.IngressController; ing != nil {
+		profiles = append(profiles, profileInput{ing.Type, ing.MinTLSVersion, ing.Ciphers, portResult.IngressTLSConfigCompliance})
+	}
+	if api := tlsProfile.APIServer; api != nil {
+		profiles = append(profiles, profileInput{api.Type, api.MinTLSVersion, api.Ciphers, portResult.APIServerTLSConfigCompliance})
+	}
+	if kube := tlsProfile.KubeletConfig; kube != nil {
+		profiles = append(profiles, profileInput{"", kube.MinTLSVersion, kube.TLSCipherSuites, portResult.KubeletTLSConfigCompliance})
 	}
 
-	if api := tlsProfile.APIServer; tlsProfile.APIServer != nil {
-		if api.MinTLSVersion != "" {
-			apiMinVersion := TLSVersionValueMap[api.MinTLSVersion]
-			portResult.APIServerTLSConfigCompliance.Version = (portResultMinVersion >= apiMinVersion)
-		}
-		portResult.APIServerTLSConfigCompliance.Ciphers = checkCipherCompliance(portResult.TlsCiphers, api.Ciphers)
-	}
-
-	if kube := tlsProfile.KubeletConfig; tlsProfile.KubeletConfig != nil {
-		if kube.MinTLSVersion != "" {
-			kubMinVersion := TLSVersionValueMap[kube.MinTLSVersion]
-			portResult.KubeletTLSConfigCompliance.Version = (portResultMinVersion >= kubMinVersion)
-		}
-		portResult.KubeletTLSConfigCompliance.Ciphers = checkCipherCompliance(portResult.TlsCiphers, kube.TLSCipherSuites)
+	for _, p := range profiles {
+		evaluateCompliance(scannedMinVer, portResult.TlsCiphers, p)
 	}
 }
 
 func checkCipherCompliance(gotCiphers []string, expectedCiphers []string) bool {
+	if len(expectedCiphers) == 0 {
+		return true
+	}
+
+	if len(gotCiphers) == 0 {
+		return false
+	}
+
 	expectedSet := make(map[string]struct{}, len(expectedCiphers))
 	for _, c := range expectedCiphers {
 		expectedSet[c] = struct{}{}
-	}
-
-	if len(gotCiphers) == 0 && len(expectedCiphers) > 0 {
-		return false
 	}
 
 	for _, cipher := range gotCiphers {

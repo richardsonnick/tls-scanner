@@ -15,6 +15,7 @@ var csvColumns = []string{
 	"IP", "Port", "Protocol", "Service", "Pod Name", "Namespace", "Component Name", "Component Maintainer",
 	"Process", "TLS Ciphers", "TLS Version", "TLS Supported Groups", "Status", "Reason", "Listen Address",
 	"TLS 1.3 Supported", "ML-KEM Supported", "ML-KEM KEMs", "All KEMs",
+	"TLS 1.3 Offered", "TLS 1.2 Only", "PQC Capable", "Readiness Notes",
 	"Ingress Configured Profile", "Ingress Configured MinVersion", "Ingress MinVersion Compliance", "Ingress Configured Ciphers", "Ingress Cipher Compliance",
 	"API Configured Profile", "API Configured MinVersion", "API MinVersion Compliance", "API Configured Ciphers", "API Cipher Compliance",
 	"Kubelet Configured MinVersion", "Kubelet MinVersion Compliance", "Kubelet Configured Ciphers", "Kubelet Cipher Compliance",
@@ -136,6 +137,10 @@ func WriteCSVOutput(results scanner.ScanResults, filename string) error {
 				"ML-KEM Supported":              boolToYesNo(portResult.MLKEMSupported),
 				"ML-KEM KEMs":                   joinOrNA(portResult.MLKEMCiphers),
 				"All KEMs":                      joinOrNA(portResult.AllKEMs),
+				"TLS 1.3 Offered":              "No",
+				"TLS 1.2 Only":                 "No",
+				"PQC Capable":                  "No",
+				"Readiness Notes":              "N/A",
 				"Ingress Configured Profile":    ingressProfile,
 				"Ingress Configured MinVersion": ingressMinVersion,
 				"Ingress MinVersion Compliance": "N/A",
@@ -163,6 +168,12 @@ func WriteCSVOutput(results scanner.ScanResults, filename string) error {
 			if portResult.KubeletTLSConfigCompliance != nil {
 				rowData["Kubelet MinVersion Compliance"] = strconv.FormatBool(portResult.KubeletTLSConfigCompliance.Version)
 				rowData["Kubelet Cipher Compliance"] = strconv.FormatBool(portResult.KubeletTLSConfigCompliance.Ciphers)
+			}
+			if portResult.TLSReadiness != nil {
+				rowData["TLS 1.3 Offered"] = boolToYesNo(portResult.TLSReadiness.TLS13Offered)
+				rowData["TLS 1.2 Only"] = boolToYesNo(portResult.TLSReadiness.TLS12Only)
+				rowData["PQC Capable"] = boolToYesNo(portResult.TLSReadiness.PQCCapable)
+				rowData["Readiness Notes"] = stringOrNA(portResult.TLSReadiness.Notes)
 			}
 
 			row := buildCSVRow(csvColumns, rowData)

@@ -9,6 +9,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+var (
+	defaultProfileName    = "Default"
+	defaultProfileType    = configv1.TLSProfileIntermediateType
+	defaultProfileCiphers = configv1.TLSProfiles[defaultProfileType].Ciphers
+	defaultProfileMinVer  = string(configv1.TLSProfiles[defaultProfileType].MinTLSVersion)
+)
+
 func (c *Client) GetTLSSecurityProfile() (*TLSSecurityProfile, error) {
 	log.Printf("Collecting TLS security profiles from OpenShift components...")
 
@@ -44,7 +51,9 @@ func (c *Client) getIngressControllerTLS() (*IngressTLSProfile, error) {
 	profile := &IngressTLSProfile{}
 
 	if ingress.Spec.TLSSecurityProfile == nil {
-		profile.Type = "API Config Server"
+		profile.Type = defaultProfileName
+		profile.Ciphers = defaultProfileCiphers
+		profile.MinTLSVersion = defaultProfileMinVer
 		return profile, nil
 	}
 
@@ -79,7 +88,9 @@ func (c *Client) getAPIServerTLS() (*APIServerTLSProfile, error) {
 	profile := &APIServerTLSProfile{}
 
 	if apiserver.Spec.TLSSecurityProfile == nil {
-		profile.Type = "Default"
+		profile.Type = defaultProfileName
+		profile.Ciphers = defaultProfileCiphers
+		profile.MinTLSVersion = defaultProfileMinVer
 		return profile, nil
 	}
 

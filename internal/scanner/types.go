@@ -120,11 +120,22 @@ type PortResult struct {
 	MLKEMSupported               bool                       `json:"mlkem_supported,omitempty"`
 	MLKEMCiphers                 []string                   `json:"mlkem_kems,omitempty"`
 	AllKEMs                      []string                   `json:"all_kems,omitempty"`
+	TLSReadiness                 *TLSReadiness              `json:"tls_readiness,omitempty"`
 }
 
 type TLSConfigComplianceResult struct {
-	Version bool `json:"version"`
-	Ciphers bool `json:"ciphers"`
+	ConfiguredProfile string `json:"configured_profile,omitempty"`
+	Version           bool   `json:"version"`
+	Ciphers           bool   `json:"ciphers"`
+}
+
+type TLSReadiness struct {
+	TLS13Offered bool     `json:"tls13_offered"`
+	TLS12Only    bool     `json:"tls12_only"`
+	PQCCapable   bool     `json:"pqc_capable"`
+	MLKEMKEMs    []string `json:"mlkem_kems,omitempty"`
+	AllKEMs      []string `json:"all_kems,omitempty"`
+	Notes        string   `json:"notes,omitempty"`
 }
 
 type ForwardSecrecy struct {

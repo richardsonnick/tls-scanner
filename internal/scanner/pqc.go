@@ -8,10 +8,18 @@ var SkipUnscannable PortFilter = func(status ScanStatus) bool {
 	return status == StatusNoPorts || status == StatusLocalhostOnly || status == StatusNoTLS
 }
 
+var (
+	readinessModernReady = "Endpoint offers TLS 1.3 and ML-KEM — ready for Modern profile"
+	readinessNoPQC       = "Endpoint offers TLS 1.3 but no ML-KEM — not PQC ready"
+	readinessTLS12Only   = "Endpoint only offers TLS 1.2 — will fail on Modern profile"
+	readinessNoTLS       = "No TLS versions detected"
+)
+
 func PopulatePQCFields(pr *PortResult) {
 	pr.TLS13Supported = stringInSlice("TLSv1.3", pr.TlsVersions)
 
 	if pr.TlsKeyExchange == nil {
+		populateTLSReadiness(pr)
 		return
 	}
 
@@ -35,6 +43,34 @@ func PopulatePQCFields(pr *PortResult) {
 			}
 		}
 	}
+
+	populateTLSReadiness(pr)
+}
+
+func populateTLSReadiness(pr *PortResult) {
+	tls13 := pr.TLS13Supported
+	tls12Only := !tls13 && len(pr.TlsVersions) > 0
+
+	readiness := &TLSReadiness{
+		TLS13Offered: tls13,
+		TLS12Only:    tls12Only,
+		PQCCapable:   pr.MLKEMSupported,
+		MLKEMKEMs:    pr.MLKEMCiphers,
+		AllKEMs:      pr.AllKEMs,
+	}
+
+	switch {
+	case tls13 && pr.MLKEMSupported:
+		readiness.Notes = readinessModernReady
+	case tls13 && !pr.MLKEMSupported:
+		readiness.Notes = readinessNoPQC
+	case tls12Only:
+		readiness.Notes = readinessTLS12Only
+	case len(pr.TlsVersions) == 0:
+		readiness.Notes = readinessNoTLS
+	}
+
+	pr.TLSReadiness = readiness
 }
 
 func HasPQCComplianceFailures(results ScanResults, skip PortFilter) bool {
