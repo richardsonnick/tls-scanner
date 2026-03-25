@@ -288,6 +288,27 @@ func TestGetPlaintextProbePorts(t *testing.T) {
 			want: map[int]bool{},
 		},
 		{
+			name: "init container plaintext probe",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{Name: "main"},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name: "init",
+							Ports: []v1.ContainerPort{
+								{Name: "healthz", ContainerPort: 9440, Protocol: v1.ProtocolTCP},
+							},
+							LivenessProbe: httpProbe(namedPort("healthz")),
+						},
+					},
+				},
+			},
+			want: map[int]bool{9440: true},
+		},
+		{
 			name: "no probes",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
