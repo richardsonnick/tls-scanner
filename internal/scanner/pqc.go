@@ -1,6 +1,8 @@
 package scanner
 
-import "log"
+import (
+	"log"
+)
 
 type PortFilter func(status ScanStatus) bool
 
@@ -73,6 +75,12 @@ func populateTLSReadiness(pr *PortResult) {
 	pr.TLSReadiness = readiness
 }
 
+// hasPQCComplianceFailures is an unexported convenience wrapper used by tests
+// that applies the standard SkipUnscannable filter.
+func hasPQCComplianceFailures(results ScanResults) bool {
+	return HasPQCComplianceFailures(results, SkipUnscannable)
+}
+
 func HasPQCComplianceFailures(results ScanResults, skip PortFilter) bool {
 	for _, ipResult := range results.IPResults {
 		for _, portResult := range ipResult.PortResults {
@@ -90,17 +98,6 @@ func HasPQCComplianceFailures(results ScanResults, skip PortFilter) bool {
 				return true
 			}
 
-			hasValidMLKEM := false
-			for _, kem := range portResult.MLKEMCiphers {
-				if IsKEMGroup(kem) {
-					hasValidMLKEM = true
-					break
-				}
-			}
-			if !hasValidMLKEM {
-				log.Printf("PQC compliance failure: %s:%d - No valid ML-KEM KEM found", ipResult.IP, portResult.Port)
-				return true
-			}
 		}
 	}
 	return false

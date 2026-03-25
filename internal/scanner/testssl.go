@@ -3,6 +3,7 @@ package scanner
 import (
 	"encoding/json"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -311,6 +312,40 @@ func IsKEMGroup(name string) bool {
 		strings.Contains(lower, "sntrup") ||
 		strings.Contains(lower, "bike") ||
 		strings.Contains(lower, "hqc")
+}
+
+func GroupTestSSLOutputByPort(jsonData []byte) (map[string][]map[string]interface{}, error) {
+	var rawData []map[string]interface{}
+	if err := json.Unmarshal(jsonData, &rawData); err != nil {
+		return nil, err
+	}
+
+	grouped := make(map[string][]map[string]interface{})
+	for _, finding := range rawData {
+		port, _ := finding["port"].(string)
+		if port == "" {
+			continue
+		}
+		grouped[port] = append(grouped[port], finding)
+	}
+
+	return grouped, nil
+}
+
+func ParseTestSSLOutputFromFile(filename, host, port string) ScanRun {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		log.Printf("Error reading testssl output file %s: %v", filename, err)
+		return ScanRun{Hosts: []Host{{
+			Ports: []Port{{
+				PortID:   port,
+				Protocol: "tcp",
+				State:    State{State: "open"},
+				Service:  Service{Name: "ssl/tls"},
+			}},
+		}}}
+	}
+	return ParseTestSSLOutput(data, host, port)
 }
 
 func GroupTestSSLOutputByIPPort(jsonData []byte) (map[string][]map[string]interface{}, error) {
