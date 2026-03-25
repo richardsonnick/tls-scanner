@@ -224,7 +224,8 @@ func decodeProcNetAddr(hexAddr string) string {
 func GetPlaintextProbePorts(pod *v1.Pod) map[int]bool {
 	result := make(map[int]bool)
 
-	for _, container := range pod.Spec.Containers {
+	allContainers := append(pod.Spec.Containers, pod.Spec.InitContainers...)
+	for _, container := range allContainers {
 		namedPorts := buildNamedPortMap(container.Ports)
 
 		for _, probe := range []*v1.Probe{
