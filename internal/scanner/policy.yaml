@@ -9,18 +9,24 @@
 #   kubelet    - KubeletConfig TLS profile    (falls back to APIServer if no override is set)
 #
 # Matching fields (all optional; omitting a field matches any value):
-#   namespace:  Kubernetes pod namespace
-#   process:    Process name as discovered from /proc (e.g. "kubelet")
-#   port:       Listening port number
-#   component:  OpenShift component name derived from image metadata
+#   namespace:  Kubernetes pod namespace       (Go regex, anchored)
+#   process:    Process name from /proc        (Go regex, anchored)
+#   port:       Listening port number          (exact integer match)
+#   component:  OpenShift component name       (Go regex, anchored)
 #
-# Example custom rule (add below the defaults to extend or override):
-#   - namespace: my-namespace
+# String fields are Go regular expressions matched against the full value.
+# Plain strings like "kubelet" match exactly. Use "openshift-.*" for a prefix
+# match. Omitting a field is a wildcard (matches any value).
+#
+# Example custom rule:
+#   - namespace: openshift-.*
 #     process: my-server
 #     profile: apiserver
 rules:
   - namespace: openshift-ingress
     profile: ingress
+  - process: kubelet
+    profile: kubelet
   - port: 10250
     profile: kubelet
   - port: 10255

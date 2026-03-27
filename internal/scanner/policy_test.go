@@ -110,11 +110,37 @@ func TestPolicyResolve(t *testing.T) {
 			port:  1234,
 			want:  KubeletComponent,
 		},
+		{
+			name:      "namespace regex prefix match",
+			rules:     []PolicyRule{{Namespace: "openshift-.*", Profile: ProfileIngress}},
+			namespace: "openshift-ingress",
+			port:      443,
+			want:      IngressComponent,
+		},
+		{
+			name:      "namespace regex does not match different prefix",
+			rules:     []PolicyRule{{Namespace: "openshift-.*", Profile: ProfileIngress}},
+			namespace: "kube-system",
+			port:      443,
+			want:      GenericComponent,
+		},
+		{
+			name:    "process regex matches kubelet variant",
+			rules:   []PolicyRule{{Process: "kubelet.*", Profile: ProfileKubelet}},
+			process: "kubelet-extra",
+			port:    443,
+			want:    KubeletComponent,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			policy := &ComponentPolicy{Rules: tt.rules}
+			for i := range policy.Rules {
+				if err := policy.Rules[i].compile(); err != nil {
+					t.Fatalf("rule %d: compile error: %v", i, err)
+				}
+			}
 			got := policy.Resolve(tt.namespace, tt.process, tt.component, tt.port)
 			if got != tt.want {
 				t.Errorf("Resolve(%q, %q, %q, %d) = %v, want %v",
@@ -130,20 +156,51 @@ func TestPolicyBehaviour(t *testing.T) {
 	tests := []struct {
 		name      string
 		namespace string
+		process   string
+		component string
 		port      int
 		want      ComponentType
 	}{
-		{"ingress namespace", "openshift-ingress", 443, IngressComponent},
-		{"kubelet port 10250", "", 10250, KubeletComponent},
-		{"kubelet port 10255", "", 10255, KubeletComponent},
-		{"generic", "openshift-kube-apiserver", 6443, GenericComponent},
+		{
+			// Ingress controller pods run in openshift-ingress and should be
+			// checked against the IngressController TLS profile.
+			name:      "ingress-controller conforms to ingress profile",
+			namespace: "openshift-ingress",
+			process:   "router",
+			port:      443,
+			want:      IngressComponent,
+		},
+		{
+			// Kubelet is identified by process name and should be checked
+			// against the KubeletConfig TLS profile.
+			name:    "kubelet conforms to kubelet profile",
+			process: "kubelet",
+			port:    10250,
+			want:    KubeletComponent,
+		},
+		{
+			// Kubelet identification falls back to well-known port when
+			// process name is not available.
+			name: "kubelet identified by port when process name unavailable",
+			port: 10250,
+			want: KubeletComponent,
+		},
+		{
+			// Any other component defaults to the cluster-wide APIServer profile.
+			name:      "generic component conforms to APIServer profile",
+			namespace: "openshift-kube-apiserver",
+			process:   "kube-apiserver",
+			port:      6443,
+			want:      GenericComponent,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := p.Resolve(tt.namespace, "", "", tt.port)
+			got := p.Resolve(tt.namespace, tt.process, tt.component, tt.port)
 			if got != tt.want {
-				t.Errorf("Policy().Resolve(%q, %d) = %v, want %v", tt.namespace, tt.port, got, tt.want)
+				t.Errorf("Policy().Resolve(%q, %q, %q, %d) = %v, want %v",
+					tt.namespace, tt.process, tt.component, tt.port, got, tt.want)
 			}
 		})
 	}

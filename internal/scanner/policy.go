@@ -3,6 +3,7 @@ package scanner
 import (
 	_ "embed"
 	"fmt"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,14 +23,20 @@ const (
 
 // PolicyRule matches a scanned port by any combination of namespace, process
 // name, port number, and component name. Omitted fields act as wildcards.
-// When all specified fields match, the first such rule wins and the port is
-// checked against the given Profile.
+// String fields are treated as Go regular expressions anchored at both ends
+// (i.e. the pattern must match the whole value). When all specified fields
+// match, the first such rule wins and the port is checked against Profile.
 type PolicyRule struct {
 	Namespace string        `yaml:"namespace,omitempty"`
 	Process   string        `yaml:"process,omitempty"`
 	Port      *int          `yaml:"port,omitempty"`
 	Component string        `yaml:"component,omitempty"`
 	Profile   ProfileSource `yaml:"profile"`
+
+	// compiled regexes, populated by compile() after unmarshal
+	namespaceRe *regexp.Regexp
+	processRe   *regexp.Regexp
+	componentRe *regexp.Regexp
 }
 
 // ComponentPolicy is a prioritised list of PolicyRules. Rules are evaluated
@@ -51,7 +58,35 @@ func Policy() *ComponentPolicy {
 		// policy.yaml is checked into source; a parse failure is a programming error.
 		panic(fmt.Sprintf("failed to parse embedded policy: %v", err))
 	}
+	for i := range p.Rules {
+		if err := p.Rules[i].compile(); err != nil {
+			panic(fmt.Sprintf("policy rule %d: %v", i, err))
+		}
+	}
 	return &p
+}
+
+// compile pre-compiles the regex patterns in the rule. Patterns are implicitly
+// anchored so "openshift-ingress" matches that exact string, while
+// "openshift-.*" matches any string with that prefix.
+func (r *PolicyRule) compile() error {
+	var err error
+	if r.Namespace != "" {
+		if r.namespaceRe, err = regexp.Compile("^(?:" + r.Namespace + ")$"); err != nil {
+			return fmt.Errorf("invalid namespace pattern %q: %w", r.Namespace, err)
+		}
+	}
+	if r.Process != "" {
+		if r.processRe, err = regexp.Compile("^(?:" + r.Process + ")$"); err != nil {
+			return fmt.Errorf("invalid process pattern %q: %w", r.Process, err)
+		}
+	}
+	if r.Component != "" {
+		if r.componentRe, err = regexp.Compile("^(?:" + r.Component + ")$"); err != nil {
+			return fmt.Errorf("invalid component pattern %q: %w", r.Component, err)
+		}
+	}
+	return nil
 }
 
 // Resolve returns the ComponentType for a port with the given attributes by
@@ -74,13 +109,13 @@ func (p *ComponentPolicy) Resolve(namespace, process, component string, port int
 }
 
 func (r *PolicyRule) matches(namespace, process, component string, port int) bool {
-	if r.Namespace != "" && r.Namespace != namespace {
+	if r.namespaceRe != nil && !r.namespaceRe.MatchString(namespace) {
 		return false
 	}
-	if r.Process != "" && r.Process != process {
+	if r.processRe != nil && !r.processRe.MatchString(process) {
 		return false
 	}
-	if r.Component != "" && r.Component != component {
+	if r.componentRe != nil && !r.componentRe.MatchString(component) {
 		return false
 	}
 	if r.Port != nil && *r.Port != port {
