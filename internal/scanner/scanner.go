@@ -76,32 +76,45 @@ func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Cli
 					component, _ = client.GetOpenshiftComponentFromImage(pod.Image)
 				}
 
-				specPorts, _ := k8s.DiscoverPortsFromPodSpec(pod.Pod)
-				var procPorts []int
-				if client != nil {
-					var err error
-					procPorts, err = client.DiscoverPortsFromProc(pod)
-					if err != nil {
-						log.Printf("Warning: /proc port discovery failed for %s/%s: %v", pod.Namespace, pod.Name, err)
-					}
+			specPorts, _ := k8s.DiscoverPortsFromPodSpec(pod.Pod)
+			var procPorts []int
+			procAvailable := false
+			if client != nil {
+				var err error
+				procPorts, err = client.DiscoverPortsFromProc(pod)
+				if err != nil {
+					log.Printf("Warning: /proc port discovery failed for %s/%s: %v", pod.Namespace, pod.Name, err)
+				} else {
+					procAvailable = true
 				}
+			}
 
-				var processMap map[string]map[int]string
-				if client != nil && len(pod.Containers) > 0 {
-					processMap = client.GetAndCachePodProcesses(pod)
-				}
+			var processMap map[string]map[int]string
+			if client != nil && len(pod.Containers) > 0 {
+				processMap = client.GetAndCachePodProcesses(pod)
+			}
 
-				if pod.Pod.Spec.HostNetwork && processMap != nil && len(procPorts) > 0 {
-					procPorts = filterByProcessPorts(processMap, procPorts)
-				}
+			if pod.Pod.Spec.HostNetwork && processMap != nil && len(procPorts) > 0 {
+				procPorts = filterByProcessPorts(processMap, procPorts)
+			}
 
-				openPorts := k8s.UnionPorts(specPorts, procPorts)
+			// When /proc data is available use it as the ground truth — only
+			// ports with an active listener are included. Fall back to
+			// spec-declared ports only when proc discovery is unavailable or
+			// failed, to avoid false positives from containerPorts that are
+			// declared but never actually bound.
+			var openPorts []int
+			if procAvailable {
+				openPorts = procPorts
+			} else {
+				openPorts = specPorts
+			}
 
-				// Identify plaintext probe ports up front so we can skip them below.
-				probePorts := k8s.GetPlaintextProbePorts(pod.Pod)
+			// Identify plaintext probe ports up front so we can skip them below.
+			probePorts := k8s.GetPlaintextProbePorts(pod.Pod)
 
-				log.Printf("DISCOVERY %d: %s/%s hostNet=%v spec=%v proc=%v union=%v probePorts=%v (%d ports)",
-					workerID, pod.Namespace, pod.Name, pod.Pod.Spec.HostNetwork, specPorts, procPorts, openPorts, probePorts, len(openPorts))
+			log.Printf("DISCOVERY %d: %s/%s hostNet=%v spec=%v proc=%v open=%v probePorts=%v (%d ports)",
+				workerID, pod.Namespace, pod.Name, pod.Pod.Spec.HostNetwork, specPorts, procPorts, openPorts, probePorts, len(openPorts))
 
 				for _, ip := range pod.IPs {
 					if len(openPorts) == 0 {
