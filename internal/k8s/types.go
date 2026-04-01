@@ -66,6 +66,11 @@ type Client struct {
 	dynamicClient             dynamic.Interface
 	processNameMap            map[string]map[int]string
 	listenInfoMap             map[string]map[int]ListenInfo
+	// procListenAddrMap holds the decoded listen address for every port seen in
+	// /proc/net/tcp(6). It covers all containers in a pod (shared network
+	// namespace) and is used by IsLocalhostOnly as a fallback when lsof data is
+	// unavailable for a port (e.g. ports owned by secondary containers).
+	procListenAddrMap         map[string]map[int]string
 	processDiscoveryAttempted map[string]bool
 	processCacheMutex         sync.Mutex
 	namespace                 string

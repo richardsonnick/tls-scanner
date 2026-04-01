@@ -65,6 +65,7 @@ func NewClient() (*Client, error) {
 		dynamicClient:             dynamicClient,
 		processNameMap:            make(map[string]map[int]string),
 		listenInfoMap:             make(map[string]map[int]ListenInfo),
+		procListenAddrMap:         make(map[string]map[int]string),
 		processDiscoveryAttempted: make(map[string]bool),
 		namespace:                 namespace,
 		configClient:              configClient,

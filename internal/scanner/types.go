@@ -96,6 +96,10 @@ const (
 	StatusNoTLS         ScanStatus = "NO_TLS"
 	StatusLocalhostOnly ScanStatus = "LOCALHOST_ONLY"
 	StatusNoPorts       ScanStatus = "NO_PORTS"
+	// StatusProbePort indicates the port is used exclusively as a health probe
+	// endpoint (liveness, readiness, or startup) with a plaintext protocol
+	// (HTTP, TCP, or gRPC). TLS is not expected on such ports.
+	StatusProbePort ScanStatus = "PROBE_PORT"
 )
 
 type PortResult struct {

@@ -160,14 +160,36 @@ func (c *Client) IsLocalhostOnly(ip string, port int) (bool, string) {
 	c.processCacheMutex.Lock()
 	defer c.processCacheMutex.Unlock()
 
+	// Primary source: lsof data (covers ports visible from Containers[0]).
+	// When lsof has an entry for this port, treat it as authoritative and do
+	// not fall through to proc data — lsof provides richer process context and
+	// its bind address should be trusted over the kernel's /proc view.
 	if portMap, ok := c.listenInfoMap[ip]; ok {
 		if info, ok := portMap[port]; ok {
-			if info.ListenAddress == "127.0.0.1" || info.ListenAddress == "localhost" {
+			if isLocalhostAddr(info.ListenAddress) {
 				return true, info.ListenAddress
+			}
+			return false, ""
+		}
+	}
+
+	// Fallback: /proc/net/tcp data (covers all containers via shared network
+	// namespace, including ports owned by secondary containers that are
+	// invisible to lsof due to PID namespace isolation).
+	if addrMap, ok := c.procListenAddrMap[ip]; ok {
+		if addr, ok := addrMap[port]; ok {
+			if isLocalhostAddr(addr) {
+				return true, addr
 			}
 		}
 	}
+
 	return false, ""
+}
+
+// isLocalhostAddr reports whether addr is a loopback address.
+func isLocalhostAddr(addr string) bool {
+	return addr == "127.0.0.1" || addr == "::1" || addr == "localhost"
 }
 
 func (c *Client) GetListenInfo(ip string, port int) (ListenInfo, bool) {
