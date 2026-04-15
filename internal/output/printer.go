@@ -77,7 +77,41 @@ func PrintClusterResults(results scanner.ScanResults) {
 					}
 				}
 			}
+			printCiphersPerProto(portResult)
 			fmt.Printf("\n")
+		}
+	}
+}
+
+var tlsVersionOrder = []string{"SSLv2", "SSLv3", "TLSv1.0", "TLSv1.1", "TLSv1.2", "TLSv1.3"}
+
+func printCiphersPerProto(pr scanner.PortResult) {
+	if len(pr.TlsCiphersPerProto) == 0 {
+		return
+	}
+	fmt.Printf("    Ciphers per Protocol:\n")
+	for _, ver := range tlsVersionOrder {
+		ciphers, ok := pr.TlsCiphersPerProto[ver]
+		if !ok {
+			continue
+		}
+		fmt.Printf("      %s: (%d ciphers)\n", ver, len(ciphers))
+		for _, c := range ciphers {
+			extra := ""
+			if c.KeyExch != "" || c.Bits != "" {
+				parts := []string{}
+				if c.KeyExch != "" {
+					parts = append(parts, c.KeyExch)
+				}
+				if c.Encrypt != "" {
+					parts = append(parts, c.Encrypt)
+				}
+				if c.Bits != "" {
+					parts = append(parts, c.Bits+" bits")
+				}
+				extra = " (" + strings.Join(parts, ", ") + ")"
+			}
+			fmt.Printf("        %-45s %s%s\n", c.Name, c.Strength, extra)
 		}
 	}
 }
@@ -98,20 +132,37 @@ func PrintParsedResults(results scanner.ScanResults) {
 				for _, version := range portResult.TlsVersions {
 					fmt.Printf("|   %s:\n", version)
 				}
-				if len(portResult.TlsCiphers) > 0 {
-					fmt.Printf("|   ciphers:\n")
-					for _, cipher := range portResult.TlsCiphers {
-						strength := portResult.TlsCipherStrength[cipher]
-						if strength != "" {
-							fmt.Printf("|     %s - %s\n", cipher, strength)
+			if len(portResult.TlsCiphers) > 0 {
+				fmt.Printf("|   ciphers:\n")
+				for _, cipher := range portResult.TlsCiphers {
+					strength := portResult.TlsCipherStrength[cipher]
+					if strength != "" {
+						fmt.Printf("|     %s - %s\n", cipher, strength)
+					} else {
+						fmt.Printf("|     %s\n", cipher)
+					}
+				}
+			}
+			if len(portResult.TlsCiphersPerProto) > 0 {
+				fmt.Println("| cipher-per-proto:")
+				for _, ver := range tlsVersionOrder {
+					ciphers, ok := portResult.TlsCiphersPerProto[ver]
+					if !ok {
+						continue
+					}
+					fmt.Printf("|   %s: (%d ciphers)\n", ver, len(ciphers))
+					for _, c := range ciphers {
+						if c.KeyExch != "" {
+							fmt.Printf("|     %-45s %-6s  %s %s\n", c.Name, c.KeyExch, c.Encrypt, c.Bits)
 						} else {
-							fmt.Printf("|     %s\n", cipher)
+							fmt.Printf("|     %s - %s\n", c.Name, c.Strength)
 						}
 					}
 				}
 			}
 		}
 	}
+}
 }
 
 func PrintPQCClusterResults(results scanner.ScanResults) {

@@ -14,10 +14,12 @@ import (
 const mockTestSSLScript = `#!/bin/bash
 JSONFILE=""
 TARGETS_FILE=""
+CIPHER_PER_PROTO=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --jsonfile) JSONFILE="$2"; shift 2;;
         --file) TARGETS_FILE="$2"; shift 2;;
+        -E) CIPHER_PER_PROTO=true; shift;;
         *) shift;;
     esac
 done
@@ -32,6 +34,12 @@ while IFS= read -r target; do
     printf '{"id":"TLS1_3","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
     printf '{"id":"FS","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
     printf '{"id":"FS_KEMs","ip":"%s/%s","port":"%s","severity":"OK","finding":"x25519mlkem768"}' "$ip" "$ip" "$port"
+    if [ "$CIPHER_PER_PROTO" = true ]; then
+        printf ',{"id":"cipher-tls1_2-x0033","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_RSA_WITH_AES_128_CBC_SHA RSA AES 128"}' "$ip" "$ip" "$port"
+        printf ',{"id":"cipher-tls1_2-xc02f","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 ECDH AESGCM 128"}' "$ip" "$ip" "$port"
+        printf ',{"id":"cipher-tls1_3-x1301","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_AES_128_GCM_SHA256 ECDH AESGCM 128"}' "$ip" "$ip" "$port"
+        printf ',{"id":"cipher-tls1_3-x1302","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_AES_256_GCM_SHA384 ECDH AESGCM 256"}' "$ip" "$ip" "$port"
+    fi
 done < "$TARGETS_FILE"
 printf ']'
 } > "$JSONFILE"
@@ -71,7 +79,7 @@ func TestScanWithMockTestSSL(t *testing.T) {
 		{IP: "10.0.0.1", Port: 443},
 		{IP: "10.0.0.2", Port: 8443},
 	}
-	results := Scan(jobs, 2, nil, nil)
+	results := Scan(jobs, 2, nil, nil, false)
 
 	if results.ScannedIPs != 2 {
 		t.Fatalf("expected 2 scanned IPs, got %d", results.ScannedIPs)
@@ -95,7 +103,7 @@ func TestScanPQCEnrichment(t *testing.T) {
 	installMockTestSSL(t)
 
 	jobs := []ScanJob{{IP: "10.0.0.1", Port: 443}}
-	results := Scan(jobs, 1, nil, nil)
+	results := Scan(jobs, 1, nil, nil, false)
 
 	pr := results.IPResults[0].PortResults[0]
 
@@ -128,7 +136,7 @@ func TestPerformClusterScanWithMockPods(t *testing.T) {
 		makePod("no-ports", "openshift-console", "10.128.0.30"),
 	}
 
-	results := PerformClusterScan(pods, 2, nil)
+	results := PerformClusterScan(pods, 2, nil, false)
 
 	if results.ScannedIPs != 3 {
 		t.Errorf("expected 3 scanned IPs (including no-ports), got %d", results.ScannedIPs)

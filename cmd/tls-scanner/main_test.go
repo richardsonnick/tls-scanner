@@ -12,10 +12,12 @@ import (
 const mockTestSSLScript = `#!/bin/bash
 JSONFILE=""
 TARGETS_FILE=""
+CIPHER_PER_PROTO=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --jsonfile) JSONFILE="$2"; shift 2;;
         --file) TARGETS_FILE="$2"; shift 2;;
+        -E) CIPHER_PER_PROTO=true; shift;;
         *) shift;;
     esac
 done
@@ -36,6 +38,12 @@ while IFS= read -r target; do
     printf '{"id":"FS","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"}' "$ip" "$ip" "$port"
     if [ -z "${MOCK_NO_MLKEM:-}" ]; then
         printf ',{"id":"FS_KEMs","ip":"%s/%s","port":"%s","severity":"OK","finding":"x25519mlkem768"}' "$ip" "$ip" "$port"
+    fi
+    if [ "$CIPHER_PER_PROTO" = true ]; then
+        printf ',{"id":"cipher-tls1_2-x0033","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_RSA_WITH_AES_128_CBC_SHA RSA AES 128"}' "$ip" "$ip" "$port"
+        printf ',{"id":"cipher-tls1_2-xc02f","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 ECDH AESGCM 128"}' "$ip" "$ip" "$port"
+        printf ',{"id":"cipher-tls1_3-x1301","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_AES_128_GCM_SHA256 ECDH AESGCM 128"}' "$ip" "$ip" "$port"
+        printf ',{"id":"cipher-tls1_3-x1302","ip":"%s/%s","port":"%s","severity":"OK","finding":"TLS_AES_256_GCM_SHA384 ECDH AESGCM 256"}' "$ip" "$ip" "$port"
     fi
 done < "$TARGETS_FILE"
 printf ']'
@@ -251,6 +259,73 @@ func TestPQCComplianceFailure(t *testing.T) {
 	}
 	if pr.MLKEMSupported {
 		t.Error("expected MLKEMSupported=false (mock omits MLKEM)")
+	}
+}
+
+func TestCipherPerProtoFlag(t *testing.T) {
+	installMockTestSSL(t)
+	outDir := t.TempDir()
+
+	code := run([]string{
+		"-E",
+		"--targets", "10.0.0.1:443",
+		"--json-file", "results.json",
+		"--artifact-dir", outDir,
+		"-j", "1",
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	results := readJSONResults(t, outDir, "results.json")
+	if results.ScannedIPs != 1 {
+		t.Fatalf("expected 1 scanned IP, got %d", results.ScannedIPs)
+	}
+
+	pr := results.IPResults[0].PortResults[0]
+	if pr.Status != scanner.StatusOK {
+		t.Errorf("expected status OK, got %s", pr.Status)
+	}
+
+	if len(pr.TlsCiphersPerProto) == 0 {
+		t.Fatal("expected TlsCiphersPerProto to be populated")
+	}
+
+	tls12Ciphers, ok := pr.TlsCiphersPerProto["TLSv1.2"]
+	if !ok {
+		t.Fatal("expected TLSv1.2 ciphers in per-proto results")
+	}
+	if len(tls12Ciphers) != 2 {
+		t.Errorf("expected 2 TLSv1.2 ciphers, got %d", len(tls12Ciphers))
+	}
+
+	tls13Ciphers, ok := pr.TlsCiphersPerProto["TLSv1.3"]
+	if !ok {
+		t.Fatal("expected TLSv1.3 ciphers in per-proto results")
+	}
+	if len(tls13Ciphers) != 2 {
+		t.Errorf("expected 2 TLSv1.3 ciphers, got %d", len(tls13Ciphers))
+	}
+}
+
+func TestCipherPerProtoNotPresentByDefault(t *testing.T) {
+	installMockTestSSL(t)
+	outDir := t.TempDir()
+
+	code := run([]string{
+		"--targets", "10.0.0.1:443",
+		"--json-file", "results.json",
+		"--artifact-dir", outDir,
+		"-j", "1",
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	results := readJSONResults(t, outDir, "results.json")
+	pr := results.IPResults[0].PortResults[0]
+	if len(pr.TlsCiphersPerProto) != 0 {
+		t.Errorf("expected TlsCiphersPerProto to be empty without -E flag, got %d protocols", len(pr.TlsCiphersPerProto))
 	}
 }
 

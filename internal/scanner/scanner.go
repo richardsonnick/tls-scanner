@@ -24,7 +24,7 @@ type portScanResult struct {
 	result    PortResult
 }
 
-func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Client) ScanResults {
+func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Client, cipherPerProto bool) ScanResults {
 	defer timing.Timings.Track("performClusterScan", "")()
 	startTime := time.Now()
 
@@ -210,7 +210,7 @@ func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Cli
 	fmt.Printf("\n=== DISCOVERY COMPLETE: %d pods -> %d scan jobs (%d deduplicated), %d skipped ===\n\n",
 		progress.discoveredPods.Load(), len(scanJobs), beforeDedup-len(scanJobs), progress.skippedPorts.Load())
 
-	batchResults := batchScan(scanJobs, concurrentScans, client, tlsConfig)
+	batchResults := batchScan(scanJobs, concurrentScans, client, tlsConfig, cipherPerProto)
 
 	results := assembleResults(startTime, totalIPs, tlsConfig, localhostResults, batchResults)
 
@@ -232,7 +232,7 @@ func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Cli
 
 // Scan runs a batch testssl.sh scan on pre-built scan jobs.
 // Used by --targets and single-host paths (no k8s discovery needed).
-func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile) ScanResults {
+func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile, cipherPerProto bool) ScanResults {
 	defer timing.Timings.Track("scan", "")()
 	startTime := time.Now()
 
@@ -247,7 +247,7 @@ func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8
 	fmt.Printf("MAX_PARALLEL: %d\n", concurrentScans)
 	fmt.Printf("========================================\n\n")
 
-	batchResults := batchScan(jobs, concurrentScans, client, tlsConfig)
+	batchResults := batchScan(jobs, concurrentScans, client, tlsConfig, cipherPerProto)
 	results := assembleResults(startTime, 0, tlsConfig, batchResults)
 
 	duration := time.Since(startTime)
@@ -265,7 +265,7 @@ func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8
 	return results
 }
 
-func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile) []portScanResult {
+func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile, cipherPerProto bool) []portScanResult {
 	if len(jobs) == 0 {
 		return nil
 	}
@@ -300,7 +300,11 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "testssl.sh", "-p", "-s", "-f",
+	testsslArgs := []string{"-p", "-s", "-f"}
+	if cipherPerProto {
+		testsslArgs = append(testsslArgs, "-E")
+	}
+	testsslArgs = append(testsslArgs,
 		"--connect-timeout", "5",
 		"--openssl-timeout", "5",
 		"--file", targetsFile,
@@ -308,6 +312,7 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 		"--warnings", "off",
 		"--color", "0",
 		"--parallel")
+	cmd := exec.CommandContext(ctx, "testssl.sh", testsslArgs...)
 	cmd.Env = append(os.Environ(), fmt.Sprintf("MAX_PARALLEL=%d", concurrentScans))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -358,6 +363,10 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 
 		portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = ExtractTLSInfo(scanResult)
 		portResult.TlsKeyExchange = ExtractKeyExchangeFromTestSSL(portData)
+
+		if cipherPerProto {
+			portResult.TlsCiphersPerProto = ExtractCiphersPerProto(portData)
+		}
 
 		PopulatePQCFields(&portResult)
 

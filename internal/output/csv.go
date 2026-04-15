@@ -13,7 +13,7 @@ import (
 
 var csvColumns = []string{
 	"IP", "Port", "Protocol", "Service", "Pod Name", "Namespace", "Component Name", "Component Maintainer",
-	"Process", "TLS Ciphers", "TLS Version", "TLS Supported Groups", "Status", "Reason", "Listen Address",
+	"Process", "TLS Ciphers", "TLS Version", "TLS Supported Groups", "TLS Ciphers Per Proto", "Status", "Reason", "Listen Address",
 	"TLS 1.3 Supported", "ML-KEM Supported", "ML-KEM KEMs", "All KEMs",
 	"TLS 1.3 Offered", "TLS 1.2 Only", "PQC Capable", "Readiness Notes",
 	"Ingress Configured Profile", "Ingress Configured MinVersion", "Ingress MinVersion Compliance", "Ingress Configured Ciphers", "Ingress Cipher Compliance",
@@ -130,6 +130,7 @@ func WriteCSVOutput(results scanner.ScanResults, filename string) error {
 				"TLS Ciphers":                   joinOrNA(portResult.TlsCiphers),
 				"TLS Version":                   joinOrNA(portResult.TlsVersions),
 				"TLS Supported Groups":          supportedGroups,
+				"TLS Ciphers Per Proto":         formatCiphersPerProto(portResult.TlsCiphersPerProto),
 				"Status":                        statusStr,
 				"Reason":                        stringOrNA(portResult.Reason),
 				"Listen Address":                stringOrNA(portResult.ListenAddress),
@@ -272,6 +273,29 @@ func boolToYesNo(b bool) string {
 		return "Yes"
 	}
 	return "No"
+}
+
+func formatCiphersPerProto(cpp map[string][]scanner.CipherDetail) string {
+	if len(cpp) == 0 {
+		return "N/A"
+	}
+	order := []string{"SSLv2", "SSLv3", "TLSv1.0", "TLSv1.1", "TLSv1.2", "TLSv1.3"}
+	var parts []string
+	for _, ver := range order {
+		ciphers, ok := cpp[ver]
+		if !ok {
+			continue
+		}
+		names := make([]string, 0, len(ciphers))
+		for _, c := range ciphers {
+			names = append(names, c.Name)
+		}
+		parts = append(parts, ver+": "+strings.Join(names, " "))
+	}
+	if len(parts) == 0 {
+		return "N/A"
+	}
+	return strings.Join(parts, "; ")
 }
 
 func stringInSlice(s string, list []string) bool {

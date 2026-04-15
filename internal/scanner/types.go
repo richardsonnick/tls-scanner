@@ -112,6 +112,7 @@ type PortResult struct {
 	TlsVersions                  []string                   `json:"tls_versions,omitempty"`
 	TlsCiphers                   []string                   `json:"tls_ciphers,omitempty"`
 	TlsCipherStrength            map[string]string          `json:"tls_cipher_strength,omitempty"`
+	TlsCiphersPerProto           map[string][]CipherDetail  `json:"tls_ciphers_per_proto,omitempty"`
 	TlsKeyExchange               *KeyExchangeInfo           `json:"tls_key_exchange,omitempty"`
 	Error                        string                     `json:"error,omitempty"`
 	Status                       ScanStatus                 `json:"status"`
@@ -125,6 +126,14 @@ type PortResult struct {
 	MLKEMCiphers                 []string                   `json:"mlkem_kems,omitempty"`
 	AllKEMs                      []string                   `json:"all_kems,omitempty"`
 	TLSReadiness                 *TLSReadiness              `json:"tls_readiness,omitempty"`
+}
+
+type CipherDetail struct {
+	Name     string `json:"name"`
+	KeyExch  string `json:"key_exchange,omitempty"`
+	Encrypt  string `json:"encryption,omitempty"`
+	Bits     string `json:"bits,omitempty"`
+	Strength string `json:"strength"`
 }
 
 type TLSConfigComplianceResult struct {

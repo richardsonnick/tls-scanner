@@ -303,6 +303,85 @@ func ExtractKeyExchangeFromTestSSL(jsonData []byte) *KeyExchangeInfo {
 	return keyExchange
 }
 
+// ExtractCiphersPerProto parses testssl.sh -E (--cipher-per-proto) JSON
+// output and returns a map from TLS version (e.g. "TLSv1.2") to the list
+// of individual ciphers reported for that protocol.
+func ExtractCiphersPerProto(jsonData []byte) map[string][]CipherDetail {
+	var rawData []map[string]interface{}
+	if err := json.Unmarshal(jsonData, &rawData); err != nil {
+		log.Printf("Error parsing testssl.sh JSON for cipher-per-proto: %v", err)
+		return nil
+	}
+
+	result := make(map[string][]CipherDetail)
+
+	for _, finding := range rawData {
+		id, _ := finding["id"].(string)
+		findingValue, _ := finding["finding"].(string)
+		severity, _ := finding["severity"].(string)
+
+		if findingValue == "" || findingValue == "not offered" {
+			continue
+		}
+
+		isCipherEntry := (strings.HasPrefix(id, "cipher-") || strings.HasPrefix(id, "cipher_")) &&
+			!strings.Contains(id, "order") &&
+			!strings.Contains(id, "list") &&
+			!strings.Contains(id, "score")
+		if !isCipherEntry {
+			continue
+		}
+
+		tlsVersion := extractTLSVersionFromCipherID(id, finding)
+		if tlsVersion == "" {
+			continue
+		}
+
+		detail := parseCipherFinding(findingValue, severity)
+		if detail.Name == "" {
+			continue
+		}
+
+		result[tlsVersion] = append(result[tlsVersion], detail)
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// parseCipherFinding extracts cipher details from a testssl.sh finding string.
+// testssl -E findings typically look like:
+//
+//	"TLS_AES_128_GCM_SHA256  ECDH 253  AESGCM  128"
+//
+// or simply:
+//
+//	"TLS_AES_128_GCM_SHA256"
+func parseCipherFinding(finding, severity string) CipherDetail {
+	fields := strings.Fields(finding)
+	if len(fields) == 0 {
+		return CipherDetail{}
+	}
+
+	detail := CipherDetail{
+		Name:     fields[len(fields)-1],
+		Strength: mapSeverityToStrength(severity),
+	}
+
+	if len(fields) >= 4 {
+		detail.Name = fields[0]
+		detail.KeyExch = fields[1]
+		detail.Encrypt = fields[len(fields)-2]
+		detail.Bits = fields[len(fields)-1]
+	} else if len(fields) >= 2 {
+		detail.Name = fields[0]
+	}
+
+	return detail
+}
+
 func IsKEMGroup(name string) bool {
 	lower := strings.ToLower(name)
 	return strings.Contains(lower, "mlkem") ||

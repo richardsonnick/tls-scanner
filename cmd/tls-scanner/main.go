@@ -66,6 +66,7 @@ func run(args []string) (exitCode int) {
 	limitIPs := fs.Int("limit-ips", 0, "Limit the number of IPs to scan for testing purposes (0 = no limit)")
 	logFile := fs.String("log-file", "", "Redirect all log output to the specified file")
 	pqcCheck := fs.Bool("pqc-check", false, "Quick check for TLS 1.3 and ML-KEM (post-quantum) support only")
+	cipherPerProto := fs.Bool("E", false, "Check ciphers per protocol (like testssl.sh -E / --cipher-per-proto)")
 	timingFile := fs.String("timing-file", "", "Output timing report to specified file in artifact-dir")
 	showVersion := fs.Bool("version", false, "Print version and exit")
 
@@ -145,7 +146,7 @@ func run(args []string) (exitCode int) {
 			return 1
 		}
 
-		scanResults := scanner.Scan(jobs, *concurrentScans, nil, nil)
+		scanResults := scanner.Scan(jobs, *concurrentScans, nil, nil, *cipherPerProto)
 		finalScanResults = &scanResults
 
 		if err := output.WriteOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile, isPQCCheck); err != nil {
@@ -202,7 +203,7 @@ func run(args []string) (exitCode int) {
 	}
 
 	if len(pods) > 0 {
-		scanResults := scanner.PerformClusterScan(pods, *concurrentScans, client)
+		scanResults := scanner.PerformClusterScan(pods, *concurrentScans, client, *cipherPerProto)
 		finalScanResults = &scanResults
 
 		if err := output.WriteOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile, isPQCCheck); err != nil {
@@ -225,7 +226,7 @@ func run(args []string) (exitCode int) {
 	}
 
 	jobs := []scanner.ScanJob{{IP: normalizeHost(*host), Port: portNum}}
-	scanResults := scanner.Scan(jobs, *concurrentScans, client, nil)
+	scanResults := scanner.Scan(jobs, *concurrentScans, client, nil, *cipherPerProto)
 	finalScanResults = &scanResults
 
 	if err := output.WriteOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile, isPQCCheck); err != nil {
