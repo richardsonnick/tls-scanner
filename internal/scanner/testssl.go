@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -371,10 +372,53 @@ func GroupTestSSLOutputByIPPort(jsonData []byte) (map[string][]map[string]interf
 	return grouped, nil
 }
 
-func ExtractTLSInfo(scanRun ScanRun) (versions []string, ciphers []string, cipherStrength map[string]string) {
-	var allDetectedCiphers []string
+// ExtractCiphersFromTestSSL extracts all cipher suites from testssl.sh
+// cipher-tls1_2_* and cipher-tls1_3_* findings. Unlike FS_ECDHE (which only
+// reports forward-secrecy ciphers), this captures every cipher the server
+// offers, including static RSA key-exchange suites.
+func ExtractCiphersFromTestSSL(jsonData []byte) []string {
+	var rawData []map[string]interface{}
+	if err := json.Unmarshal(jsonData, &rawData); err != nil {
+		log.Printf("Error parsing testssl.sh JSON for ciphers: %v", err)
+		return nil
+	}
+
+	r := regexp.MustCompile(`TLS \d.\d\s+[^\s]+\s+([^\s]+)\s+.*`)
+
+	var ciphers []string
+	for _, finding := range rawData {
+		id, _ := finding["id"].(string)
+		if !strings.HasPrefix(id, "cipher-tls1_") {
+			continue
+		}
+		cipher, _ := finding["finding"].(string)
+		if cipher == "" {
+			continue
+		}
+		// Each "finding" value is in the following format:
+		// 	 proto		hexcode		cipher 		keyexchange		encryption 	export
+		// E.g.
+		//   TLS 1.3   x1302   TLS_AES_256_GCM_SHA384            ECDH/MLKEM AESGCM      256      TLS_AES_256_GCM_SHA384
+
+		// Remove the trailing spaces just in case
+		cipher = strings.Trim(cipher, " ")
+		// find the cipher by retrieving the third item
+		matches := r.FindStringSubmatch(cipher)
+		if len(matches) < 2 {
+			log.Printf("Expected a ciper in %q, did not find any", cipher)
+			continue
+		}
+		cipher = matches[1]
+		if !stringInSlice(cipher, ciphers) {
+			ciphers = append(ciphers, cipher)
+		}
+	}
+
+	return ciphers
+}
+
+func ExtractTLSInfo(scanRun ScanRun) []string {
 	var tlsVersions []string
-	cipherStrength = make(map[string]string)
 
 	for _, host := range scanRun.Hosts {
 		for _, tlsPort := range host.Ports {
@@ -385,36 +429,11 @@ func ExtractTLSInfo(scanRun ScanRun) (versions []string, ciphers []string, ciphe
 						if tlsVersion != "" {
 							tlsVersions = append(tlsVersions, tlsVersion)
 						}
-
-						for _, subTable := range table.Tables {
-							if subTable.Key == "ciphers" {
-								var currentCipherName string
-								var currentCipherStrength string
-								for _, cipherTable := range subTable.Tables {
-									currentCipherName = ""
-									currentCipherStrength = ""
-									for _, elem := range cipherTable.Elems {
-										if elem.Key == "name" {
-											currentCipherName = elem.Value
-										} else if elem.Key == "strength" {
-											currentCipherStrength = elem.Value
-										}
-									}
-									if currentCipherName != "" && currentCipherStrength != "" {
-										allDetectedCiphers = append(allDetectedCiphers, currentCipherName)
-										cipherStrength[currentCipherName] = currentCipherStrength
-									}
-								}
-							}
-						}
 					}
 				}
 			}
 		}
 	}
 
-	allDetectedCiphers = removeDuplicates(allDetectedCiphers)
-	tlsVersions = removeDuplicates(tlsVersions)
-
-	return tlsVersions, allDetectedCiphers, cipherStrength
+	return removeDuplicates(tlsVersions)
 }

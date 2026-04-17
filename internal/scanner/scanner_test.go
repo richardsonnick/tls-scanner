@@ -214,18 +214,11 @@ func TestExtractTLSInfo(t *testing.T) {
 		}},
 	}
 
-	versions, ciphers, strengths := ExtractTLSInfo(scan)
+	versions := ExtractTLSInfo(scan)
 	slices.Sort(versions)
-	slices.Sort(ciphers)
 
 	if !reflect.DeepEqual(versions, []string{"TLSv1.2", "TLSv1.3"}) {
 		t.Fatalf("unexpected versions: %#v", versions)
-	}
-	if !reflect.DeepEqual(ciphers, []string{"CIPHER_A"}) {
-		t.Fatalf("unexpected ciphers: %#v", ciphers)
-	}
-	if strengths["CIPHER_A"] != "A" {
-		t.Fatalf("unexpected cipher strength map: %#v", strengths)
 	}
 }
 
@@ -287,15 +280,9 @@ func TestParseTestSSLOutputAndConvert(t *testing.T) {
 	b, _ := json.Marshal(raw)
 
 	run := ParseTestSSLOutput(b, "10.0.0.1", "443")
-	versions, ciphers, strengths := ExtractTLSInfo(run)
+	versions := ExtractTLSInfo(run)
 	if len(versions) == 0 || versions[0] != "TLSv1.3" {
 		t.Fatalf("expected TLSv1.3 in parsed versions, got %#v", versions)
-	}
-	if len(ciphers) != 1 || ciphers[0] != "TLS_AES_128_GCM_SHA256" {
-		t.Fatalf("unexpected parsed ciphers: %#v", ciphers)
-	}
-	if strengths["TLS_AES_128_GCM_SHA256"] != "A" {
-		t.Fatalf("unexpected strength for cipher: %#v", strengths)
 	}
 }
 
@@ -324,7 +311,7 @@ func TestParseTestSSLOutputFromFile(t *testing.T) {
 	}
 
 	run := ParseTestSSLOutputFromFile(file, "127.0.0.1", "443")
-	versions, _, _ := ExtractTLSInfo(run)
+	versions := ExtractTLSInfo(run)
 	if len(versions) != 1 || versions[0] != "TLSv1.2" {
 		t.Fatalf("unexpected versions from file parse: %#v", versions)
 	}
@@ -368,6 +355,54 @@ func TestExtractCipherAndVersionHelpers(t *testing.T) {
 	}
 	if got := extractTLSVersionFromCipherID("cipher-foo", map[string]any{}); got != "TLSv1.2" {
 		t.Fatalf("unexpected fallback version: %s", got)
+	}
+}
+
+func TestExtractCiphersFromTestSSL(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"id": "TLS1_3", "finding": "offered (OK)", "severity": "OK"},
+		{"id": "cipher-tls1_3_x1302", "finding": "TLS 1.3   x1302   TLS_AES_256_GCM_SHA384            ECDH 253   AESGCM      256      TLS_AES_256_GCM_SHA384", "severity": "OK"},
+		{"id": "cipher-tls1_3_x1301", "finding": "TLS 1.3   x1301   TLS_AES_128_GCM_SHA256            ECDH 253   AESGCM      128      TLS_AES_128_GCM_SHA256", "severity": "OK"},
+		{"id": "cipher-tls1_2_xc02f", "finding": "TLS 1.2   xc02f   ECDHE-RSA-AES128-GCM-SHA256       ECDH 253   AESGCM      128      TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "severity": "OK"},
+		{"id": "cipher-tls1_3_x1301", "finding": "TLS 1.3   x1301   TLS_AES_128_GCM_SHA256            ECDH 253   AESGCM      128      TLS_AES_128_GCM_SHA256", "severity": "OK"},
+		{"id": "cipher_order", "finding": "server", "severity": "OK"},
+		{"id": "FS", "finding": "offered", "severity": "OK"},
+	}
+	b, _ := json.Marshal(raw)
+	ciphers := ExtractCiphersFromTestSSL(b)
+
+	if len(ciphers) != 3 {
+		t.Fatalf("expected 3 unique ciphers, got %d: %#v", len(ciphers), ciphers)
+	}
+	expected := []string{"TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256", "ECDHE-RSA-AES128-GCM-SHA256"}
+	for _, e := range expected {
+		if !slices.Contains(ciphers, e) {
+			t.Fatalf("expected cipher %q in result, got %#v", e, ciphers)
+		}
+	}
+}
+
+func TestExtractCiphersFromTestSSLEmpty(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"id": "TLS1_3", "finding": "offered (OK)", "severity": "OK"},
+		{"id": "FS", "finding": "offered", "severity": "OK"},
+	}
+	b, _ := json.Marshal(raw)
+	ciphers := ExtractCiphersFromTestSSL(b)
+	if len(ciphers) != 0 {
+		t.Fatalf("expected no ciphers from non-cipher findings, got %#v", ciphers)
+	}
+}
+
+func TestExtractCiphersFromTestSSLInvalidJSON(t *testing.T) {
+	t.Parallel()
+	ciphers := ExtractCiphersFromTestSSL([]byte("{bad-json"))
+	if ciphers != nil {
+		t.Fatalf("expected nil for invalid JSON, got %#v", ciphers)
 	}
 }
 
