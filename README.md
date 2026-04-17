@@ -188,3 +188,4 @@ The scanner binary accepts the following command-line options. These are configu
 - `-log-file <file>` - Redirect all log output to the specified file
 - `-timing-file <file>` - Write timing report to specified file in artifact-dir
 - `-version` - Print version and exit
+
