@@ -300,7 +300,7 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "testssl.sh", "-p", "-s", "-f",
+	cmd := exec.CommandContext(ctx, "testssl.sh", "-p", "-s", "-f", "-E",
 		"--connect-timeout", "5",
 		"--openssl-timeout", "5",
 		"--file", targetsFile,
@@ -356,7 +356,8 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 			Service:  "ssl/tls",
 		}
 
-		portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = ExtractTLSInfo(scanResult)
+		portResult.TlsVersions = ExtractTLSInfo(scanResult)
+		portResult.TlsCiphers = ExtractCiphersFromTestSSL(portData)
 		portResult.TlsKeyExchange = ExtractKeyExchangeFromTestSSL(portData)
 
 		PopulatePQCFields(&portResult)

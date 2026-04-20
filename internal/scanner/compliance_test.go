@@ -286,6 +286,42 @@ func TestCheckCipherCompliance(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "corrected ECDHE-RSA IANA mapping",
+			got:      []string{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
+			expected: []string{"ECDHE-RSA-AES128-GCM-SHA256"},
+			want:     true,
+		},
+		{
+			name:     "corrected ECDHE-ECDSA IANA mapping",
+			got:      []string{"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"},
+			expected: []string{"ECDHE-ECDSA-AES256-GCM-SHA384"},
+			want:     true,
+		},
+		{
+			name:     "corrected DHE-RSA IANA mapping",
+			got:      []string{"TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"},
+			expected: []string{"DHE-RSA-AES256-GCM-SHA384"},
+			want:     true,
+		},
+		{
+			name:     "corrected static RSA IANA mapping",
+			got:      []string{"TLS_RSA_WITH_AES_128_GCM_SHA256"},
+			expected: []string{"AES128-GCM-SHA256"},
+			want:     true,
+		},
+		{
+			name:     "IANA fallback — cipher already in OpenSSL format matches expected",
+			got:      []string{"ECDHE-RSA-AES128-GCM-SHA256"},
+			expected: []string{"ECDHE-RSA-AES128-GCM-SHA256"},
+			want:     true,
+		},
+		{
+			name:     "IANA fallback — unmapped cipher not in expected set",
+			got:      []string{"ECDHE-RSA-AES128-GCM-SHA256"},
+			expected: []string{"AES256-GCM-SHA384"},
+			want:     false,
+		},
+		{
 			name:     "unrecognized cipher = non-compliant",
 			got:      []string{"TOTALLY_UNKNOWN_CIPHER"},
 			expected: []string{"TLS_AES_256_GCM_SHA384"},
