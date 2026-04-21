@@ -41,7 +41,18 @@ func (c *Client) GetTLSSecurityProfile() (*TLSSecurityProfile, error) {
 		profile.KubeletConfig = kubeletTLS
 	}
 
+	profile.TLSAdherence = c.getAPIServerTLSAdherence()
+
 	return profile, nil
+}
+
+func (c *Client) getAPIServerTLSAdherence() string {
+	apiserver, err := c.configClient.ConfigV1().APIServers().Get(context.Background(), "cluster", metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Warning: could not read APIServer custom resource for tlsAdherence: %v", err)
+		return ""
+	}
+	return string(apiserver.Spec.TLSAdherence)
 }
 
 func (c *Client) getIngressControllerTLS(fallback *APIServerTLSProfile) (*IngressTLSProfile, error) {

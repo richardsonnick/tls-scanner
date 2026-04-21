@@ -38,6 +38,7 @@ type TLSSecurityProfile struct {
 	IngressController *IngressTLSProfile   `json:"ingress_controller,omitempty"`
 	APIServer         *APIServerTLSProfile `json:"api_server,omitempty"`
 	KubeletConfig     *KubeletTLSProfile   `json:"kubelet_config,omitempty"`
+	TLSAdherence      string               `json:"tls_adherence,omitempty"`
 }
 
 type IngressTLSProfile struct {
