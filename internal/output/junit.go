@@ -59,13 +59,13 @@ func WriteJUnitOutput(scanResults scanner.ScanResults, filename string, pqcCheck
 			}
 
 			var failures []string
-			if portResult.IngressTLSConfigCompliance != nil && (!portResult.IngressTLSConfigCompliance.Version || !portResult.IngressTLSConfigCompliance.Ciphers) {
+			if portResult.IngressTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.IngressTLSConfigCompliance) {
 				failures = append(failures, "Ingress TLS config is not compliant.")
 			}
-			if portResult.APIServerTLSConfigCompliance != nil && (!portResult.APIServerTLSConfigCompliance.Version || !portResult.APIServerTLSConfigCompliance.Ciphers) {
+			if portResult.APIServerTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.APIServerTLSConfigCompliance) {
 				failures = append(failures, "API Server TLS config is not compliant.")
 			}
-			if portResult.KubeletTLSConfigCompliance != nil && (!portResult.KubeletTLSConfigCompliance.Version || !portResult.KubeletTLSConfigCompliance.Ciphers) {
+			if portResult.KubeletTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.KubeletTLSConfigCompliance) {
 				failures = append(failures, "Kubelet TLS config is not compliant.")
 			}
 

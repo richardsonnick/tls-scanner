@@ -1,0 +1,33 @@
+# Default TLS component policy.
+#
+# Rules are evaluated top-to-bottom; the first matching rule wins.
+# A component with no matching rule uses the cluster-wide APIServer TLS profile.
+#
+# Available profiles:
+#   apiserver  - cluster-wide APIServer TLS profile (default for all components)
+#   ingress    - IngressController TLS profile (falls back to APIServer if no override is set)
+#   kubelet    - KubeletConfig TLS profile    (falls back to APIServer if no override is set)
+#
+# Matching fields (all optional; omitting a field matches any value):
+#   namespace:  Kubernetes pod namespace       (Go regex, anchored)
+#   process:    Process name from /proc        (Go regex, anchored)
+#   port:       Listening port number          (exact integer match)
+#   component:  OpenShift component name       (Go regex, anchored)
+#
+# String fields are Go regular expressions matched against the full value.
+# Plain strings like "kubelet" match exactly. Use "openshift-.*" for a prefix
+# match. Omitting a field is a wildcard (matches any value).
+#
+# Example custom rule:
+#   - namespace: openshift-.*
+#     process: my-server
+#     profile: apiserver
+rules:
+  - namespace: openshift-ingress
+    profile: ingress
+  - process: kubelet
+    profile: kubelet
+  - port: 10250
+    profile: kubelet
+  - port: 10255
+    profile: kubelet

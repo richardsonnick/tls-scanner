@@ -7,50 +7,9 @@ import (
 	"testing"
 
 	"github.com/openshift/tls-scanner/internal/scanner"
+	"github.com/openshift/tls-scanner/internal/testutil"
 )
 
-const mockTestSSLScript = `#!/bin/bash
-JSONFILE=""
-TARGETS_FILE=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --jsonfile) JSONFILE="$2"; shift 2;;
-        --file) TARGETS_FILE="$2"; shift 2;;
-        *) shift;;
-    esac
-done
-{
-printf '['
-FIRST=true
-while IFS= read -r target; do
-    if [[ "$target" =~ ^\[(.*)\]:(.*)$ ]]; then
-        ip="${BASH_REMATCH[1]}"
-        port="${BASH_REMATCH[2]}"
-    else
-        ip="${target%:*}"
-        port="${target##*:}"
-    fi
-    [ "$FIRST" = true ] && FIRST=false || printf ','
-    printf '{"id":"TLS1_2","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
-    printf '{"id":"TLS1_3","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
-    printf '{"id":"FS","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"}' "$ip" "$ip" "$port"
-    if [ -z "${MOCK_NO_MLKEM:-}" ]; then
-        printf ',{"id":"FS_KEMs","ip":"%s/%s","port":"%s","severity":"OK","finding":"x25519mlkem768"}' "$ip" "$ip" "$port"
-    fi
-done < "$TARGETS_FILE"
-printf ']'
-} > "$JSONFILE"
-`
-
-func installMockTestSSL(t *testing.T) {
-	t.Helper()
-	mockDir := t.TempDir()
-	mockPath := filepath.Join(mockDir, "testssl.sh")
-	if err := os.WriteFile(mockPath, []byte(mockTestSSLScript), 0755); err != nil {
-		t.Fatalf("failed to write mock testssl.sh: %v", err)
-	}
-	t.Setenv("PATH", mockDir+":"+os.Getenv("PATH"))
-}
 
 func readJSONResults(t *testing.T, dir, file string) scanner.ScanResults {
 	t.Helper()
@@ -66,7 +25,7 @@ func readJSONResults(t *testing.T, dir, file string) scanner.ScanResults {
 }
 
 func TestTargetsPath(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 	outDir := t.TempDir()
 
 	code := run([]string{
@@ -110,7 +69,7 @@ func TestTargetsPath(t *testing.T) {
 }
 
 func TestSingleHostPath(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 	outDir := t.TempDir()
 
 	code := run([]string{
@@ -145,7 +104,7 @@ func TestSingleHostPath(t *testing.T) {
 }
 
 func TestTargetsPathIPv6(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 	outDir := t.TempDir()
 	target := "[fd2e:6f44:5dd8:c956::16]:6385"
 
@@ -172,7 +131,7 @@ func TestTargetsPathIPv6(t *testing.T) {
 }
 
 func TestSingleHostPathIPv6(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 	outDir := t.TempDir()
 
 	code := run([]string{
@@ -199,7 +158,7 @@ func TestSingleHostPathIPv6(t *testing.T) {
 }
 
 func TestPQCCheckTargets(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 	outDir := t.TempDir()
 
 	code := run([]string{
@@ -228,7 +187,7 @@ func TestPQCCheckTargets(t *testing.T) {
 }
 
 func TestPQCComplianceFailure(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 	t.Setenv("MOCK_NO_MLKEM", "1")
 	outDir := t.TempDir()
 
@@ -255,7 +214,7 @@ func TestPQCComplianceFailure(t *testing.T) {
 }
 
 func TestInvalidTargetsFormat(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 
 	code := run([]string{"--targets", "not-a-valid-target"})
 	if code != 1 {
@@ -264,7 +223,7 @@ func TestInvalidTargetsFormat(t *testing.T) {
 }
 
 func TestTargetsAllInvalid(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 
 	code := run([]string{"--targets", "bad-format,also-bad"})
 	if code != 1 {
@@ -273,7 +232,7 @@ func TestTargetsAllInvalid(t *testing.T) {
 }
 
 func TestAllPodsWithoutCluster(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 	t.Setenv("KUBECONFIG", "/nonexistent/kubeconfig")
 
 	code := run([]string{"--all-pods"})

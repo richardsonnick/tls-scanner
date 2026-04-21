@@ -21,19 +21,21 @@ func (c *Client) GetTLSSecurityProfile() (*TLSSecurityProfile, error) {
 
 	profile := &TLSSecurityProfile{}
 
-	if ingressTLS, err := c.getIngressControllerTLS(); err != nil {
-		log.Printf("Warning: Could not get Ingress Controller TLS config: %v", err)
-	} else {
-		profile.IngressController = ingressTLS
-	}
-
+	// APIServer is fetched first — it is the cluster-wide default that Ingress and
+	// Kubelet inherit when no component-specific override is configured.
 	if apiServerTLS, err := c.getAPIServerTLS(); err != nil {
 		log.Printf("Warning: Could not get API Server TLS config: %v", err)
 	} else {
 		profile.APIServer = apiServerTLS
 	}
 
-	if kubeletTLS, err := c.getKubeletTLS(); err != nil {
+	if ingressTLS, err := c.getIngressControllerTLS(profile.APIServer); err != nil {
+		log.Printf("Warning: Could not get Ingress Controller TLS config: %v", err)
+	} else {
+		profile.IngressController = ingressTLS
+	}
+
+	if kubeletTLS, err := c.getKubeletTLS(profile.APIServer); err != nil {
 		log.Printf("Warning: Could not get Kubelet TLS config: %v", err)
 	} else {
 		profile.KubeletConfig = kubeletTLS
@@ -42,7 +44,7 @@ func (c *Client) GetTLSSecurityProfile() (*TLSSecurityProfile, error) {
 	return profile, nil
 }
 
-func (c *Client) getIngressControllerTLS() (*IngressTLSProfile, error) {
+func (c *Client) getIngressControllerTLS(fallback *APIServerTLSProfile) (*IngressTLSProfile, error) {
 	ingress, err := c.operatorClient.OperatorV1().IngressControllers("openshift-ingress-operator").Get(context.Background(), "default", metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get IngressController custom resource: %v", err)
@@ -51,9 +53,16 @@ func (c *Client) getIngressControllerTLS() (*IngressTLSProfile, error) {
 	profile := &IngressTLSProfile{}
 
 	if ingress.Spec.TLSSecurityProfile == nil {
-		profile.Type = defaultProfileName
-		profile.Ciphers = defaultProfileCiphers
-		profile.MinTLSVersion = defaultProfileMinVer
+		// No explicit override: inherit the cluster-wide APIServer profile.
+		if fallback != nil {
+			profile.Type = fallback.Type
+			profile.Ciphers = fallback.Ciphers
+			profile.MinTLSVersion = fallback.MinTLSVersion
+		} else {
+			profile.Type = defaultProfileName
+			profile.Ciphers = defaultProfileCiphers
+			profile.MinTLSVersion = defaultProfileMinVer
+		}
 		return profile, nil
 	}
 
@@ -115,7 +124,7 @@ func (c *Client) getAPIServerTLS() (*APIServerTLSProfile, error) {
 	return profile, nil
 }
 
-func (c *Client) getKubeletTLS() (*KubeletTLSProfile, error) {
+func (c *Client) getKubeletTLS(fallback *APIServerTLSProfile) (*KubeletTLSProfile, error) {
 	kubeletConfigs, err := c.mcfgClient.MachineconfigurationV1().KubeletConfigs().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list KubeletConfigs: %v", err)
@@ -139,6 +148,14 @@ func (c *Client) getKubeletTLS() (*KubeletTLSProfile, error) {
 			}
 			return profile, nil
 		}
+	}
+
+	// No explicit KubeletConfig override: inherit the cluster-wide APIServer profile.
+	if fallback != nil {
+		return &KubeletTLSProfile{
+			TLSCipherSuites: fallback.Ciphers,
+			MinTLSVersion:   fallback.MinTLSVersion,
+		}, nil
 	}
 
 	return nil, fmt.Errorf("no KubeletConfig with a TLSSecurityProfile found in the cluster")

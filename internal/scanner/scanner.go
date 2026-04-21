@@ -24,7 +24,7 @@ type portScanResult struct {
 	result    PortResult
 }
 
-func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Client) ScanResults {
+func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Client, policy *ComponentPolicy) ScanResults {
 	defer timing.Timings.Track("performClusterScan", "")()
 	startTime := time.Now()
 
@@ -210,7 +210,7 @@ func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Cli
 	fmt.Printf("\n=== DISCOVERY COMPLETE: %d pods -> %d scan jobs (%d deduplicated), %d skipped ===\n\n",
 		progress.discoveredPods.Load(), len(scanJobs), beforeDedup-len(scanJobs), progress.skippedPorts.Load())
 
-	batchResults := batchScan(scanJobs, concurrentScans, client, tlsConfig)
+	batchResults := batchScan(scanJobs, concurrentScans, client, tlsConfig, policy)
 
 	results := assembleResults(startTime, totalIPs, tlsConfig, localhostResults, batchResults)
 
@@ -232,7 +232,7 @@ func PerformClusterScan(pods []k8s.PodInfo, concurrentScans int, client *k8s.Cli
 
 // Scan runs a batch testssl.sh scan on pre-built scan jobs.
 // Used by --targets and single-host paths (no k8s discovery needed).
-func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile) ScanResults {
+func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile, policy *ComponentPolicy) ScanResults {
 	defer timing.Timings.Track("scan", "")()
 	startTime := time.Now()
 
@@ -247,7 +247,7 @@ func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8
 	fmt.Printf("MAX_PARALLEL: %d\n", concurrentScans)
 	fmt.Printf("========================================\n\n")
 
-	batchResults := batchScan(jobs, concurrentScans, client, tlsConfig)
+	batchResults := batchScan(jobs, concurrentScans, client, tlsConfig, policy)
 	results := assembleResults(startTime, 0, tlsConfig, batchResults)
 
 	duration := time.Since(startTime)
@@ -265,7 +265,7 @@ func Scan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8
 	return results
 }
 
-func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile) []portScanResult {
+func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfig *k8s.TLSSecurityProfile, policy *ComponentPolicy) []portScanResult {
 	if len(jobs) == 0 {
 		return nil
 	}
@@ -300,7 +300,7 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "testssl.sh", "-p", "-s", "-f",
+	cmd := exec.CommandContext(ctx, "testssl.sh", "-p", "-s", "-f", "-E",
 		"--connect-timeout", "5",
 		"--openssl-timeout", "5",
 		"--file", targetsFile,
@@ -356,30 +356,41 @@ func batchScan(jobs []ScanJob, concurrentScans int, client *k8s.Client, tlsConfi
 			Service:  "ssl/tls",
 		}
 
-		portResult.TlsVersions, portResult.TlsCiphers, portResult.TlsCipherStrength = ExtractTLSInfo(scanResult)
+		portResult.TlsVersions = ExtractTLSInfo(scanResult)
+		portResult.TlsCiphers = ExtractCiphersFromTestSSL(portData)
 		portResult.TlsKeyExchange = ExtractKeyExchangeFromTestSSL(portData)
 
 		PopulatePQCFields(&portResult)
 
-		if len(portResult.TlsVersions) > 0 || len(portResult.TlsCiphers) > 0 {
-			portResult.Status = StatusOK
-			portResult.Reason = "TLS scan successful"
-			if tlsConfig != nil {
-				CheckCompliance(&portResult, tlsConfig)
-			}
-		} else {
-			portResult.Status = StatusNoTLS
-			portResult.Reason = "Port open but no TLS detected"
-		}
-
+		// Fetch process/listen info before compliance so the policy can match on
+		// process name in addition to namespace and port.
+		var processName string
 		if client != nil {
-			if processName, ok := client.GetProcessName(job.IP, job.Port); ok {
-				portResult.ProcessName = processName
+			if pn, ok := client.GetProcessName(job.IP, job.Port); ok {
+				portResult.ProcessName = pn
 				portResult.ContainerName = strings.Join(job.Pod.Containers, ",")
+				processName = pn
 			}
 			if info, ok := client.GetListenInfo(job.IP, job.Port); ok {
 				portResult.ListenAddress = info.ListenAddress
 			}
+		}
+
+		var componentName string
+		if job.Component != nil {
+			componentName = job.Component.Component
+		}
+
+		if len(portResult.TlsVersions) > 0 || len(portResult.TlsCiphers) > 0 {
+			portResult.Status = StatusOK
+			portResult.Reason = "TLS scan successful"
+			if tlsConfig != nil && policy != nil {
+				componentType := policy.Resolve(job.Pod.Namespace, processName, componentName, job.Port)
+				CheckCompliance(&portResult, tlsConfig, componentType)
+			}
+		} else {
+			portResult.Status = StatusNoTLS
+			portResult.Reason = "Port open but no TLS detected"
 		}
 
 		results = append(results, portScanResult{

@@ -1,51 +1,21 @@
 package scanner
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/openshift/tls-scanner/internal/k8s"
+	"github.com/openshift/tls-scanner/internal/testutil"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const mockTestSSLScript = `#!/bin/bash
-JSONFILE=""
-TARGETS_FILE=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --jsonfile) JSONFILE="$2"; shift 2;;
-        --file) TARGETS_FILE="$2"; shift 2;;
-        *) shift;;
-    esac
-done
-{
-printf '['
-FIRST=true
-while IFS= read -r target; do
-    ip="${target%%:*}"
-    port="${target##*:}"
-    [ "$FIRST" = true ] && FIRST=false || printf ','
-    printf '{"id":"TLS1_2","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
-    printf '{"id":"TLS1_3","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
-    printf '{"id":"FS","ip":"%s/%s","port":"%s","severity":"OK","finding":"offered (OK)"},' "$ip" "$ip" "$port"
-    printf '{"id":"FS_KEMs","ip":"%s/%s","port":"%s","severity":"OK","finding":"x25519mlkem768"}' "$ip" "$ip" "$port"
-done < "$TARGETS_FILE"
-printf ']'
-} > "$JSONFILE"
-`
-
-func installMockTestSSL(t *testing.T) {
-	t.Helper()
-	mockDir := t.TempDir()
-	mockPath := filepath.Join(mockDir, "testssl.sh")
-	if err := os.WriteFile(mockPath, []byte(mockTestSSLScript), 0755); err != nil {
-		t.Fatalf("failed to write mock testssl.sh: %v", err)
-	}
-	t.Setenv("PATH", mockDir+":"+os.Getenv("PATH"))
-}
 
 func makePod(name, namespace, ip string, ports ...int32) k8s.PodInfo {
 	var containerPorts []v1.ContainerPort
@@ -65,13 +35,13 @@ func makePod(name, namespace, ip string, ports ...int32) k8s.PodInfo {
 }
 
 func TestScanWithMockTestSSL(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 
 	jobs := []ScanJob{
 		{IP: "10.0.0.1", Port: 443},
 		{IP: "10.0.0.2", Port: 8443},
 	}
-	results := Scan(jobs, 2, nil, nil)
+	results := Scan(jobs, 2, nil, nil, Policy())
 
 	if results.ScannedIPs != 2 {
 		t.Fatalf("expected 2 scanned IPs, got %d", results.ScannedIPs)
@@ -92,10 +62,10 @@ func TestScanWithMockTestSSL(t *testing.T) {
 }
 
 func TestScanPQCEnrichment(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 
 	jobs := []ScanJob{{IP: "10.0.0.1", Port: 443}}
-	results := Scan(jobs, 1, nil, nil)
+	results := Scan(jobs, 1, nil, nil, Policy())
 
 	pr := results.IPResults[0].PortResults[0]
 
@@ -120,7 +90,7 @@ func TestScanPQCEnrichment(t *testing.T) {
 }
 
 func TestPerformClusterScanWithMockPods(t *testing.T) {
-	installMockTestSSL(t)
+	testutil.InstallMockTestSSL(t)
 
 	pods := []k8s.PodInfo{
 		makePod("apiserver-1", "openshift-apiserver", "10.128.0.10", 8443),
@@ -128,7 +98,7 @@ func TestPerformClusterScanWithMockPods(t *testing.T) {
 		makePod("no-ports", "openshift-console", "10.128.0.30"),
 	}
 
-	results := PerformClusterScan(pods, 2, nil)
+	results := PerformClusterScan(pods, 2, nil, Policy())
 
 	if results.ScannedIPs != 3 {
 		t.Errorf("expected 3 scanned IPs (including no-ports), got %d", results.ScannedIPs)
@@ -191,5 +161,447 @@ func TestAssembleResults(t *testing.T) {
 	}
 	if portsByIP["10.0.0.2"] != 1 {
 		t.Errorf("expected 1 port result for 10.0.0.2, got %d", portsByIP["10.0.0.2"])
+	}
+}
+
+func TestGetMinVersionValue(t *testing.T) {
+	t.Parallel()
+
+	if got := getMinVersionValue(nil); got != 0 {
+		t.Fatalf("expected 0 for empty versions, got %d", got)
+	}
+
+	got := getMinVersionValue([]string{"TLSv1.3", "TLSv1.1", "TLSv1.2"})
+	if got != 11 {
+		t.Fatalf("expected minimum version value 11, got %d", got)
+	}
+}
+
+
+func TestStringInSlice(t *testing.T) {
+	t.Parallel()
+	if !stringInSlice("b", []string{"a", "b", "c"}) {
+		t.Fatal("expected to find value in slice")
+	}
+	if stringInSlice("z", []string{"a", "b", "c"}) {
+		t.Fatal("expected value not to be present")
+	}
+}
+
+func TestExtractTLSInfo(t *testing.T) {
+	t.Parallel()
+
+	scan := ScanRun{
+		Hosts: []Host{{
+			Ports: []Port{{
+				Scripts: []Script{{
+					ID: "ssl-enum-ciphers",
+					Tables: []Table{
+						{
+							Key: "TLSv1.2",
+							Tables: []Table{{
+								Key: "ciphers",
+								Tables: []Table{
+									{Elems: []Elem{{Key: "name", Value: "CIPHER_A"}, {Key: "strength", Value: "A"}}},
+									{Elems: []Elem{{Key: "name", Value: "CIPHER_A"}, {Key: "strength", Value: "A"}}},
+								},
+							}},
+						},
+						{Key: "TLSv1.3"},
+					},
+				}},
+			}},
+		}},
+	}
+
+	versions := ExtractTLSInfo(scan)
+	slices.Sort(versions)
+
+	if !reflect.DeepEqual(versions, []string{"TLSv1.2", "TLSv1.3"}) {
+		t.Fatalf("unexpected versions: %#v", versions)
+	}
+}
+
+func TestGroupTestSSLOutputByPort(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"ip": "1.2.3.4", "port": "443", "id": "TLS1_3"},
+		{"ip": "1.2.3.4", "port": "8443", "id": "TLS1_2"},
+		{"ip": "1.2.3.4", "id": "NO_PORT"},
+	}
+	b, _ := json.Marshal(raw)
+
+	grouped, err := GroupTestSSLOutputByPort(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(grouped) != 2 {
+		t.Fatalf("expected 2 grouped ports, got %d", len(grouped))
+	}
+	if _, ok := grouped["443"]; !ok {
+		t.Fatal("expected 443 group to exist")
+	}
+	if _, ok := grouped["8443"]; !ok {
+		t.Fatal("expected 8443 group to exist")
+	}
+}
+
+func TestGroupTestSSLOutputByIPPort(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"ip": "1.2.3.4", "port": "443"},
+		{"ip": "1.2.3.4", "port": "8443"},
+		{"port": "443"},
+	}
+	b, _ := json.Marshal(raw)
+
+	grouped, err := GroupTestSSLOutputByIPPort(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(grouped) != 2 {
+		t.Fatalf("expected 2 grouped keys, got %d", len(grouped))
+	}
+	if _, ok := grouped["1.2.3.4:443"]; !ok {
+		t.Fatal("expected 1.2.3.4:443 group")
+	}
+}
+
+func TestParseTestSSLOutputAndConvert(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"id": "TLS1_3", "finding": "offered (OK)", "severity": "OK"},
+		{"id": "cipher-tls1_3_x1301", "finding": "TLS_AES_128_GCM_SHA256", "severity": "LOW"},
+		{"id": "cipher_order", "finding": "irrelevant", "severity": "LOW"},
+	}
+	b, _ := json.Marshal(raw)
+
+	run := ParseTestSSLOutput(b, "10.0.0.1", "443")
+	versions := ExtractTLSInfo(run)
+	if len(versions) == 0 || versions[0] != "TLSv1.3" {
+		t.Fatalf("expected TLSv1.3 in parsed versions, got %#v", versions)
+	}
+}
+
+func TestParseTestSSLOutputInvalidJSONFallback(t *testing.T) {
+	t.Parallel()
+	run := ParseTestSSLOutput([]byte("{not-json"), "host", "9443")
+	if len(run.Hosts) == 0 || len(run.Hosts[0].Ports) == 0 {
+		t.Fatal("expected fallback host/port in parse failure")
+	}
+	if run.Hosts[0].Ports[0].PortID != "9443" {
+		t.Fatalf("expected fallback port 9443, got %s", run.Hosts[0].Ports[0].PortID)
+	}
+}
+
+func TestParseTestSSLOutputFromFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "testssl.json")
+	raw := []map[string]any{
+		{"id": "TLS1_2", "finding": "offered (OK)", "severity": "OK"},
+	}
+	b, _ := json.Marshal(raw)
+	if err := os.WriteFile(file, b, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	run := ParseTestSSLOutputFromFile(file, "127.0.0.1", "443")
+	versions := ExtractTLSInfo(run)
+	if len(versions) != 1 || versions[0] != "TLSv1.2" {
+		t.Fatalf("unexpected versions from file parse: %#v", versions)
+	}
+}
+
+func TestExtractCipherAndVersionHelpers(t *testing.T) {
+	t.Parallel()
+
+	if got := extractCipherName("foo TLS_AES_128_GCM_SHA256"); got != "TLS_AES_128_GCM_SHA256" {
+		t.Fatalf("unexpected cipher extraction: %s", got)
+	}
+	if got := extractCipherName(""); got != "" {
+		t.Fatalf("expected empty cipher name, got %q", got)
+	}
+
+	if !isProtocolID("TLS1_3") || !isProtocolID("sslv3") {
+		t.Fatal("expected protocol IDs to be detected")
+	}
+	if isProtocolID("cipher-tls1_3_x1301") {
+		t.Fatal("unexpected protocol ID detection for cipher")
+	}
+
+	if got := extractTLSVersion("TLS1_3"); got != "TLSv1.3" {
+		t.Fatalf("unexpected TLS version: %s", got)
+	}
+	if got := extractTLSVersion("sslv2"); got != "SSLv2" {
+		t.Fatalf("unexpected SSL version: %s", got)
+	}
+	if got := extractTLSVersion("none"); got != "" {
+		t.Fatalf("expected empty version, got %s", got)
+	}
+
+	if got := extractTLSVersionFromCipherID("cipher-tls1_3_x1301", map[string]any{}); got != "TLSv1.3" {
+		t.Fatalf("unexpected version from cipher id: %s", got)
+	}
+	if got := extractTLSVersionFromCipherID("cipher-foo", map[string]any{"section": "TLS1_1"}); got != "TLSv1.1" {
+		t.Fatalf("unexpected version from section: %s", got)
+	}
+	if got := extractTLSVersionFromCipherID("cipher-foo", map[string]any{"finding": "TLS_AES_256_GCM_SHA384"}); got != "TLSv1.3" {
+		t.Fatalf("unexpected default tls13 inference: %s", got)
+	}
+	if got := extractTLSVersionFromCipherID("cipher-foo", map[string]any{}); got != "TLSv1.2" {
+		t.Fatalf("unexpected fallback version: %s", got)
+	}
+}
+
+func TestExtractCiphersFromTestSSL(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"id": "TLS1_3", "finding": "offered (OK)", "severity": "OK"},
+		{"id": "cipher-tls1_3_x1302", "finding": "TLS 1.3   x1302   TLS_AES_256_GCM_SHA384            ECDH 253   AESGCM      256      TLS_AES_256_GCM_SHA384", "severity": "OK"},
+		{"id": "cipher-tls1_3_x1301", "finding": "TLS 1.3   x1301   TLS_AES_128_GCM_SHA256            ECDH 253   AESGCM      128      TLS_AES_128_GCM_SHA256", "severity": "OK"},
+		{"id": "cipher-tls1_2_xc02f", "finding": "TLS 1.2   xc02f   ECDHE-RSA-AES128-GCM-SHA256       ECDH 253   AESGCM      128      TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "severity": "OK"},
+		{"id": "cipher-tls1_3_x1301", "finding": "TLS 1.3   x1301   TLS_AES_128_GCM_SHA256            ECDH 253   AESGCM      128      TLS_AES_128_GCM_SHA256", "severity": "OK"},
+		{"id": "cipher_order", "finding": "server", "severity": "OK"},
+		{"id": "FS", "finding": "offered", "severity": "OK"},
+	}
+	b, _ := json.Marshal(raw)
+	ciphers := ExtractCiphersFromTestSSL(b)
+
+	if len(ciphers) != 3 {
+		t.Fatalf("expected 3 unique ciphers, got %d: %#v", len(ciphers), ciphers)
+	}
+	expected := []string{"TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256", "ECDHE-RSA-AES128-GCM-SHA256"}
+	for _, e := range expected {
+		if !slices.Contains(ciphers, e) {
+			t.Fatalf("expected cipher %q in result, got %#v", e, ciphers)
+		}
+	}
+}
+
+func TestExtractCiphersFromTestSSLEmpty(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"id": "TLS1_3", "finding": "offered (OK)", "severity": "OK"},
+		{"id": "FS", "finding": "offered", "severity": "OK"},
+	}
+	b, _ := json.Marshal(raw)
+	ciphers := ExtractCiphersFromTestSSL(b)
+	if len(ciphers) != 0 {
+		t.Fatalf("expected no ciphers from non-cipher findings, got %#v", ciphers)
+	}
+}
+
+func TestExtractCiphersFromTestSSLInvalidJSON(t *testing.T) {
+	t.Parallel()
+	ciphers := ExtractCiphersFromTestSSL([]byte("{bad-json"))
+	if ciphers != nil {
+		t.Fatalf("expected nil for invalid JSON, got %#v", ciphers)
+	}
+}
+
+func TestMapSeverityToStrength(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"OK":       "A",
+		"LOW":      "A",
+		"MEDIUM":   "B",
+		"HIGH":     "C",
+		"CRITICAL": "F",
+		"UNKNOWN":  "unknown",
+	}
+	for sev, expected := range cases {
+		if got := mapSeverityToStrength(sev); got != expected {
+			t.Fatalf("severity %s -> expected %s, got %s", sev, expected, got)
+		}
+	}
+}
+
+func TestExtractKeyExchangeFromTestSSL(t *testing.T) {
+	t.Parallel()
+
+	raw := []map[string]any{
+		{"id": "FS", "finding": "offered"},
+		{"id": "FS_ECDHE", "finding": "x25519 secp256r1"},
+		{"id": "FS_KEMs", "finding": "X25519MLKEM768"},
+		{"id": "supported_groups", "finding": "x25519 secp256r1 X25519MLKEM768"},
+		{"id": "group_mlkem768", "finding": "offered"},
+	}
+	b, _ := json.Marshal(raw)
+	ke := ExtractKeyExchangeFromTestSSL(b)
+	if ke == nil {
+		t.Fatal("expected key exchange info")
+	}
+	if !ke.ForwardSecrecy.Supported {
+		t.Fatal("expected forward secrecy supported")
+	}
+	if !slices.Contains(ke.ForwardSecrecy.KEMs, "X25519MLKEM768") || !slices.Contains(ke.ForwardSecrecy.KEMs, "mlkem768") {
+		t.Fatalf("expected KEMs to be detected, got %#v", ke.ForwardSecrecy.KEMs)
+	}
+	if !slices.Contains(ke.Groups, "x25519") {
+		t.Fatalf("expected supported group x25519, got %#v", ke.Groups)
+	}
+}
+
+func TestExtractKeyExchangeFromTestSSLNoData(t *testing.T) {
+	t.Parallel()
+	raw := []map[string]any{
+		{"id": "FS", "finding": "not offered"},
+	}
+	b, _ := json.Marshal(raw)
+	if got := ExtractKeyExchangeFromTestSSL(b); got != nil {
+		t.Fatalf("expected nil key exchange for no useful data, got %#v", got)
+	}
+}
+
+func TestIsKEMGroup(t *testing.T) {
+	t.Parallel()
+	if !IsKEMGroup("x25519MLKEM768") {
+		t.Fatal("expected mlkem group to be true")
+	}
+	if !IsKEMGroup("sntrup761") {
+		t.Fatal("expected sntrup group to be true")
+	}
+	if IsKEMGroup("secp256r1") {
+		t.Fatal("expected classical group to be false")
+	}
+}
+
+
+func TestLimitPodsToIPCount(t *testing.T) {
+	t.Parallel()
+
+	pods := []k8s.PodInfo{
+		{Name: "a", IPs: []string{"1.1.1.1", "1.1.1.2"}},
+		{Name: "b", IPs: []string{"2.2.2.2", "2.2.2.3"}},
+	}
+
+	if got := LimitPodsToIPCount(pods, 0); len(got) != 2 {
+		t.Fatalf("expected unchanged pods for non-positive limit, got %d", len(got))
+	}
+
+	got := LimitPodsToIPCount(pods, 3)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 pods with second truncated, got %d", len(got))
+	}
+	if len(got[1].IPs) != 1 || got[1].IPs[0] != "2.2.2.2" {
+		t.Fatalf("expected truncated pod IP list, got %#v", got[1].IPs)
+	}
+}
+
+func TestWriteTargetsFile(t *testing.T) {
+	t.Parallel()
+
+	name, err := writeTargetsFile([]string{"a:443", "b:8443"})
+	if err != nil {
+		t.Fatalf("unexpected error writing targets file: %v", err)
+	}
+	defer os.Remove(name)
+
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read targets file: %v", err)
+	}
+	got := strings.TrimSpace(string(b))
+	if got != "a:443\nb:8443" {
+		t.Fatalf("unexpected targets file content: %q", got)
+	}
+}
+
+func TestDiscoverPortsFromPodSpec(t *testing.T) {
+	t.Parallel()
+
+	pod := &v1.Pod{
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Ports: []v1.ContainerPort{
+						{ContainerPort: 8443, Protocol: v1.ProtocolTCP},
+						{ContainerPort: 53, Protocol: v1.ProtocolUDP},
+					},
+				},
+			},
+			InitContainers: []v1.Container{
+				{
+					Ports: []v1.ContainerPort{
+						{ContainerPort: 9443, Protocol: v1.ProtocolTCP},
+					},
+				},
+			},
+		},
+	}
+
+	ports, err := k8s.DiscoverPortsFromPodSpec(pod)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(ports, []int{8443, 9443}) {
+		t.Fatalf("unexpected discovered ports: %#v", ports)
+	}
+}
+
+func TestHasPQCComplianceFailures(t *testing.T) {
+	t.Parallel()
+
+	noPorts := ScanResults{
+		IPResults: []IPResult{{
+			IP: "1.1.1.1",
+			PortResults: []PortResult{{
+				Status: StatusNoPorts,
+			}},
+		}},
+	}
+	if hasPQCComplianceFailures(noPorts) {
+		t.Fatal("expected no failure for no-ports status")
+	}
+
+	noTLS13 := ScanResults{
+		IPResults: []IPResult{{
+			IP: "1.1.1.1",
+			PortResults: []PortResult{{
+				Port:           443,
+				TLS13Supported: false,
+				MLKEMSupported: true,
+				MLKEMCiphers:   []string{"x25519mlkem768"},
+			}},
+		}},
+	}
+	if !hasPQCComplianceFailures(noTLS13) {
+		t.Fatal("expected failure when tls13 is false")
+	}
+
+	noMLKEM := ScanResults{
+		IPResults: []IPResult{{
+			IP: "1.1.1.1",
+			PortResults: []PortResult{{
+				Port:           443,
+				TLS13Supported: true,
+				MLKEMSupported: false,
+			}},
+		}},
+	}
+	if !hasPQCComplianceFailures(noMLKEM) {
+		t.Fatal("expected failure when mlkem supported is false")
+	}
+
+	valid := ScanResults{
+		IPResults: []IPResult{{
+			IP: "1.1.1.1",
+			PortResults: []PortResult{{
+				Port:           443,
+				TLS13Supported: true,
+				MLKEMSupported: true,
+				MLKEMCiphers:   []string{"X25519MLKEM768"},
+			}},
+		}},
+	}
+	if hasPQCComplianceFailures(valid) {
+		t.Fatal("expected no pqc failures for tls13 + valid mlkem")
 	}
 }

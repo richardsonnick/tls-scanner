@@ -80,6 +80,8 @@ func run(args []string) (exitCode int) {
 
 	isPQCCheck = *pqcCheck
 
+	policy := scanner.Policy()
+
 	defer func() {
 		if *timingFile != "" {
 			path := filepath.Join(*artifactDir, *timingFile)
@@ -145,7 +147,7 @@ func run(args []string) (exitCode int) {
 			return 1
 		}
 
-		scanResults := scanner.Scan(jobs, *concurrentScans, nil, nil)
+		scanResults := scanner.Scan(jobs, *concurrentScans, nil, nil, policy)
 		finalScanResults = &scanResults
 
 		if err := output.WriteOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile, isPQCCheck); err != nil {
@@ -202,7 +204,7 @@ func run(args []string) (exitCode int) {
 	}
 
 	if len(pods) > 0 {
-		scanResults := scanner.PerformClusterScan(pods, *concurrentScans, client)
+		scanResults := scanner.PerformClusterScan(pods, *concurrentScans, client, policy)
 		finalScanResults = &scanResults
 
 		if err := output.WriteOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile, isPQCCheck); err != nil {
@@ -225,7 +227,7 @@ func run(args []string) (exitCode int) {
 	}
 
 	jobs := []scanner.ScanJob{{IP: normalizeHost(*host), Port: portNum}}
-	scanResults := scanner.Scan(jobs, *concurrentScans, client, nil)
+	scanResults := scanner.Scan(jobs, *concurrentScans, client, nil, policy)
 	finalScanResults = &scanResults
 
 	if err := output.WriteOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile, isPQCCheck); err != nil {
