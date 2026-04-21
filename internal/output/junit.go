@@ -47,37 +47,49 @@ func WriteJUnitOutput(scanResults scanner.ScanResults, filename string, pqcCheck
 		Name: "TLSSecurityScan",
 	}
 
+	enforceTLSCompliance := scanner.TLSConfigComplianceFailuresEnforced(scanResults)
+
 	for _, ipResult := range scanResults.IPResults {
 		for _, portResult := range ipResult.PortResults {
 			className := ipResult.IP
 			if ipResult.Pod != nil {
 				className = ipResult.Pod.Name
 			}
+			
+			namePrefix := "[TLS Profile] "
+			if pqcCheck {
+				namePrefix = "[PQC] "
+			}
+			
 			testCase := JUnitTestCase{
-				Name:      fmt.Sprintf("%s:%d - %s", ipResult.IP, portResult.Port, portResult.Service),
+				Name:      fmt.Sprintf("%s%s:%d - %s", namePrefix, ipResult.IP, portResult.Port, portResult.Service),
 				ClassName: className,
 			}
 
 			var failures []string
-			if portResult.IngressTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.IngressTLSConfigCompliance) {
-				failures = append(failures, "Ingress TLS config is not compliant.")
-			}
-			if portResult.APIServerTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.APIServerTLSConfigCompliance) {
-				failures = append(failures, "API Server TLS config is not compliant.")
-			}
-			if portResult.KubeletTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.KubeletTLSConfigCompliance) {
-				failures = append(failures, "Kubelet TLS config is not compliant.")
-			}
-
-			if pqcCheck && portResult.Status != scanner.StatusNoPorts &&
-				portResult.Status != scanner.StatusLocalhostOnly &&
-				portResult.Status != scanner.StatusNoTLS &&
-				portResult.Status != scanner.StatusProbePort {
-				if !portResult.TLS13Supported {
-					failures = append(failures, "PQC: TLS 1.3 not supported.")
+			if pqcCheck {
+				if portResult.Status != scanner.StatusNoPorts &&
+					portResult.Status != scanner.StatusLocalhostOnly &&
+					portResult.Status != scanner.StatusNoTLS &&
+					portResult.Status != scanner.StatusProbePort {
+					if !portResult.TLS13Supported {
+						failures = append(failures, "PQC: TLS 1.3 not supported.")
+					}
+					if !portResult.MLKEMSupported {
+						failures = append(failures, "PQC: ML-KEM not supported (no x25519mlkem768 or mlkem768).")
+					}
 				}
-				if !portResult.MLKEMSupported {
-					failures = append(failures, "PQC: ML-KEM not supported (no x25519mlkem768 or mlkem768).")
+			} else {
+				if enforceTLSCompliance {
+					if portResult.IngressTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.IngressTLSConfigCompliance) {
+						failures = append(failures, "Ingress TLS config is not compliant.")
+					}
+					if portResult.APIServerTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.APIServerTLSConfigCompliance) {
+						failures = append(failures, "API Server TLS config is not compliant.")
+					}
+					if portResult.KubeletTLSConfigCompliance != nil && !scanner.IsTLSConfigCompliant(portResult.KubeletTLSConfigCompliance) {
+						failures = append(failures, "Kubelet TLS config is not compliant.")
+					}
 				}
 			}
 

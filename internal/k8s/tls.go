@@ -23,10 +23,13 @@ func (c *Client) GetTLSSecurityProfile() (*TLSSecurityProfile, error) {
 
 	// APIServer is fetched first — it is the cluster-wide default that Ingress and
 	// Kubelet inherit when no component-specific override is configured.
-	if apiServerTLS, err := c.getAPIServerTLS(); err != nil {
-		log.Printf("Warning: Could not get API Server TLS config: %v", err)
+	apiserver, err := c.configClient.ConfigV1().APIServers().Get(context.Background(), "cluster", metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Warning: Could not get API Server custom resource: %v", err)
+		profile.TLSAdherence = configv1.TLSAdherencePolicyNoOpinion
 	} else {
-		profile.APIServer = apiServerTLS
+		profile.APIServer = extractAPIServerTLS(apiserver)
+		profile.TLSAdherence = apiserver.Spec.TLSAdherence
 	}
 
 	if ingressTLS, err := c.getIngressControllerTLS(profile.APIServer); err != nil {
@@ -41,18 +44,7 @@ func (c *Client) GetTLSSecurityProfile() (*TLSSecurityProfile, error) {
 		profile.KubeletConfig = kubeletTLS
 	}
 
-	profile.TLSAdherence = c.getAPIServerTLSAdherence()
-
 	return profile, nil
-}
-
-func (c *Client) getAPIServerTLSAdherence() string {
-	apiserver, err := c.configClient.ConfigV1().APIServers().Get(context.Background(), "cluster", metav1.GetOptions{})
-	if err != nil {
-		log.Printf("Warning: could not read APIServer custom resource for tlsAdherence: %v", err)
-		return ""
-	}
-	return string(apiserver.Spec.TLSAdherence)
 }
 
 func (c *Client) getIngressControllerTLS(fallback *APIServerTLSProfile) (*IngressTLSProfile, error) {
@@ -99,19 +91,14 @@ func (c *Client) getIngressControllerTLS(fallback *APIServerTLSProfile) (*Ingres
 	return profile, nil
 }
 
-func (c *Client) getAPIServerTLS() (*APIServerTLSProfile, error) {
-	apiserver, err := c.configClient.ConfigV1().APIServers().Get(context.Background(), "cluster", metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get APIServer custom resource: %v", err)
-	}
-
+func extractAPIServerTLS(apiserver *configv1.APIServer) *APIServerTLSProfile {
 	profile := &APIServerTLSProfile{}
 
 	if apiserver.Spec.TLSSecurityProfile == nil {
 		profile.Type = defaultProfileName
 		profile.Ciphers = defaultProfileCiphers
 		profile.MinTLSVersion = defaultProfileMinVer
-		return profile, nil
+		return profile
 	}
 
 	profile.Type = string(apiserver.Spec.TLSSecurityProfile.Type)
@@ -132,7 +119,7 @@ func (c *Client) getAPIServerTLS() (*APIServerTLSProfile, error) {
 		profile.MinTLSVersion = string(configv1.TLSProfiles[configv1.TLSProfileModernType].MinTLSVersion)
 	}
 
-	return profile, nil
+	return profile
 }
 
 func (c *Client) getKubeletTLS(fallback *APIServerTLSProfile) (*KubeletTLSProfile, error) {

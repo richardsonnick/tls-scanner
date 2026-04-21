@@ -339,7 +339,63 @@ func TestCheckCipherCompliance(t *testing.T) {
 	}
 }
 
+func TestTLSConfigComplianceFailuresEnforced(t *testing.T) {
+	tests := []struct {
+		name    string
+		results ScanResults
+		want    bool
+	}{
+		{
+			name: "nil config = false",
+			results: ScanResults{
+				TLSSecurityConfig: nil,
+			},
+			want: false,
+		},
+		{
+			name: "StrictAllComponents = true",
+			results: ScanResults{
+				TLSSecurityConfig: &k8s.TLSSecurityProfile{TLSAdherence: configv1.TLSAdherencePolicyStrictAllComponents},
+			},
+			want: true,
+		},
+		{
+			name: "LegacyAdheringComponentsOnly = false",
+			results: ScanResults{
+				TLSSecurityConfig: &k8s.TLSSecurityProfile{TLSAdherence: configv1.TLSAdherencePolicyLegacyAdheringComponentsOnly},
+			},
+			want: false,
+		},
+		{
+			name: "NoOpinion (empty) = false",
+			results: ScanResults{
+				TLSSecurityConfig: &k8s.TLSSecurityProfile{TLSAdherence: configv1.TLSAdherencePolicyNoOpinion},
+			},
+			want: false,
+		},
+		{
+			name: "unknown adherence = true",
+			results: ScanResults{
+				TLSSecurityConfig: &k8s.TLSSecurityProfile{TLSAdherence: "UnknownValue"},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TLSConfigComplianceFailuresEnforced(tt.results)
+			if got != tt.want {
+				t.Errorf("TLSConfigComplianceFailuresEnforced() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHasComplianceFailures(t *testing.T) {
+	strictTLS := &k8s.TLSSecurityProfile{TLSAdherence: configv1.TLSAdherencePolicyStrictAllComponents}
+	legacyTLS := &k8s.TLSSecurityProfile{TLSAdherence: configv1.TLSAdherencePolicyLegacyAdheringComponentsOnly}
+
 	tests := []struct {
 		name    string
 		results ScanResults
@@ -348,6 +404,7 @@ func TestHasComplianceFailures(t *testing.T) {
 		{
 			name: "APIServer compliant = no failure",
 			results: ScanResults{
+				TLSSecurityConfig: strictTLS,
 				IPResults: []IPResult{{
 					PortResults: []PortResult{{
 						APIServerTLSConfigCompliance: &TLSConfigComplianceResult{Version: true, Ciphers: true},
@@ -359,6 +416,7 @@ func TestHasComplianceFailures(t *testing.T) {
 		{
 			name: "Ingress compliant = no failure",
 			results: ScanResults{
+				TLSSecurityConfig: strictTLS,
 				IPResults: []IPResult{{
 					PortResults: []PortResult{{
 						IngressTLSConfigCompliance: &TLSConfigComplianceResult{Version: true, Ciphers: true},
@@ -370,6 +428,7 @@ func TestHasComplianceFailures(t *testing.T) {
 		{
 			name: "Kubelet compliant = no failure",
 			results: ScanResults{
+				TLSSecurityConfig: strictTLS,
 				IPResults: []IPResult{{
 					PortResults: []PortResult{{
 						KubeletTLSConfigCompliance: &TLSConfigComplianceResult{Version: true, Ciphers: true},
@@ -379,8 +438,9 @@ func TestHasComplianceFailures(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "APIServer version failure = failure",
+			name: "APIServer version failure = failure under strict",
 			results: ScanResults{
+				TLSSecurityConfig: strictTLS,
 				IPResults: []IPResult{{
 					PortResults: []PortResult{{
 						APIServerTLSConfigCompliance: &TLSConfigComplianceResult{Version: false, Ciphers: true},
@@ -390,8 +450,32 @@ func TestHasComplianceFailures(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "Ingress cipher failure = failure",
+			name: "APIServer version failure = no failure under legacy tlsAdherence",
 			results: ScanResults{
+				TLSSecurityConfig: legacyTLS,
+				IPResults: []IPResult{{
+					PortResults: []PortResult{{
+						APIServerTLSConfigCompliance: &TLSConfigComplianceResult{Version: false, Ciphers: true},
+					}},
+				}},
+			},
+			want: false,
+		},
+		{
+			name: "APIServer version failure = no failure when tls config unknown",
+			results: ScanResults{
+				IPResults: []IPResult{{
+					PortResults: []PortResult{{
+						APIServerTLSConfigCompliance: &TLSConfigComplianceResult{Version: false, Ciphers: true},
+					}},
+				}},
+			},
+			want: false,
+		},
+		{
+			name: "Ingress cipher failure = failure under strict",
+			results: ScanResults{
+				TLSSecurityConfig: strictTLS,
 				IPResults: []IPResult{{
 					PortResults: []PortResult{{
 						IngressTLSConfigCompliance: &TLSConfigComplianceResult{Version: true, Ciphers: false},
@@ -401,8 +485,9 @@ func TestHasComplianceFailures(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "Kubelet version failure = failure",
+			name: "Kubelet version failure = failure under strict",
 			results: ScanResults{
+				TLSSecurityConfig: strictTLS,
 				IPResults: []IPResult{{
 					PortResults: []PortResult{{
 						KubeletTLSConfigCompliance: &TLSConfigComplianceResult{Version: false, Ciphers: true},
@@ -414,6 +499,7 @@ func TestHasComplianceFailures(t *testing.T) {
 		{
 			name: "nil compliance = no failure",
 			results: ScanResults{
+				TLSSecurityConfig: strictTLS,
 				IPResults: []IPResult{{
 					PortResults: []PortResult{{
 						Status: StatusOK,

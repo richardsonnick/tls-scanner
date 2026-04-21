@@ -3,6 +3,7 @@ package k8s
 import (
 	"sync"
 
+	configv1 "github.com/openshift/api/config/v1"
 	configclientset "github.com/openshift/client-go/config/clientset/versioned"
 	mcfgclientset "github.com/openshift/client-go/machineconfiguration/clientset/versioned"
 	operatorclientset "github.com/openshift/client-go/operator/clientset/versioned"
@@ -35,10 +36,10 @@ type OpenshiftComponent struct {
 }
 
 type TLSSecurityProfile struct {
-	IngressController *IngressTLSProfile   `json:"ingress_controller,omitempty"`
-	APIServer         *APIServerTLSProfile `json:"api_server,omitempty"`
-	KubeletConfig     *KubeletTLSProfile   `json:"kubelet_config,omitempty"`
-	TLSAdherence      string               `json:"tls_adherence,omitempty"`
+	IngressController *IngressTLSProfile          `json:"ingress_controller,omitempty"`
+	APIServer         *APIServerTLSProfile        `json:"api_server,omitempty"`
+	KubeletConfig     *KubeletTLSProfile          `json:"kubelet_config,omitempty"`
+	TLSAdherence      configv1.TLSAdherencePolicy `json:"tls_adherence,omitempty"`
 }
 
 type IngressTLSProfile struct {

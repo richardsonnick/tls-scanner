@@ -122,7 +122,20 @@ func checkCipherCompliance(gotCiphers []string, expectedCiphers []string) bool {
 	return true
 }
 
+// TLSConfigComplianceFailuresEnforced is true when the cluster has opted into
+// strict TLS profile adherence (tlsAdherence: StrictAllComponents); only then
+// do TLSConfigCompliance mismatches affect exit code and JUnit failures.
+func TLSConfigComplianceFailuresEnforced(results ScanResults) bool {
+	if results.TLSSecurityConfig == nil {
+		return false
+	}
+	return k8s.EnforceTLSConfigComplianceFailures(results.TLSSecurityConfig.TLSAdherence)
+}
+
 func HasComplianceFailures(results ScanResults) bool {
+	if !TLSConfigComplianceFailuresEnforced(results) {
+		return false
+	}
 	for _, ipResult := range results.IPResults {
 		for _, portResult := range ipResult.PortResults {
 			if portResult.IngressTLSConfigCompliance != nil && !IsTLSConfigCompliant(portResult.IngressTLSConfigCompliance) {
