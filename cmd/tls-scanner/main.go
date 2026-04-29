@@ -63,6 +63,8 @@ func run(args []string) (exitCode int) {
 	componentFilter := fs.String("component-filter", "", "Filter pods by a comma-separated list of component names (only used with --all-pods)")
 	namespaceFilter := fs.String("namespace-filter", "", "Filter pods by a comma-separated list of namespaces (only used with --all-pods)")
 	targets := fs.String("targets", "", "A comma-separated list of host:port targets to scan")
+	templateFile := fs.String("template", "", "Path to a YAML file listing hosts and ports to scan (see --generate-template)")
+	generateTemplate := fs.String("generate-template", "", "Write a sample targets YAML template to this path and exit")
 	limitIPs := fs.Int("limit-ips", 0, "Limit the number of IPs to scan for testing purposes (0 = no limit)")
 	logFile := fs.String("log-file", "", "Redirect all log output to the specified file")
 	pqcCheck := fs.Bool("pqc-check", false, "Quick check for TLS 1.3 and ML-KEM (post-quantum) support only")
@@ -79,6 +81,15 @@ func run(args []string) (exitCode int) {
 	}
 
 	isPQCCheck = *pqcCheck
+
+	if *generateTemplate != "" {
+		if err := scanner.GenerateTemplate(*generateTemplate); err != nil {
+			log.Printf("Error writing template: %v", err)
+			return 1
+		}
+		fmt.Printf("Template written to %s\n", *generateTemplate)
+		return 0
+	}
 
 	policy := scanner.Policy()
 
@@ -144,6 +155,29 @@ func run(args []string) (exitCode int) {
 
 		if len(jobs) == 0 {
 			log.Print("Error: No valid targets found in --targets flag")
+			return 1
+		}
+
+		scanResults := scanner.Scan(jobs, *concurrentScans, nil, nil, policy)
+		finalScanResults = &scanResults
+
+		if err := output.WriteOutputFiles(scanResults, *artifactDir, *jsonFile, *csvFile, *junitFile, isPQCCheck); err != nil {
+			log.Printf("Error writing output files: %v", err)
+			return 1
+		}
+		if isPQCCheck {
+			output.PrintPQCClusterResults(scanResults)
+		} else if *jsonFile == "" && *csvFile == "" && *junitFile == "" {
+			output.PrintClusterResults(scanResults)
+		}
+
+		return
+	}
+
+	if *templateFile != "" {
+		jobs, err := scanner.LoadTemplate(*templateFile)
+		if err != nil {
+			log.Printf("Error loading template: %v", err)
 			return 1
 		}
 
